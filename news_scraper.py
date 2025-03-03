@@ -13,7 +13,7 @@ def fetch_image_from_meta(url):
     try:
         response = requests.get(url, headers=HEADERS, timeout=5)
         if response.status_code != 200:
-            return "No Image Available"
+            return ""
 
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -28,9 +28,9 @@ def fetch_image_from_meta(url):
             return twitter_image["content"]
 
     except requests.RequestException:
-        return "No Image Available"
+        return ""
 
-    return "No Image Available"
+    return ""
 
 def fetch_news_by_date(target_date):
     """Scrapes Google News for Trump-related news on a specific date."""
@@ -57,16 +57,16 @@ def fetch_news_by_date(target_date):
         source_tag = article.select_one("div.MgUUmf span")
 
         # Extract title
-        title = title_tag.get_text(strip=True) if title_tag else "No Title"
+        title = title_tag.get_text(strip=True) if title_tag else ""
 
         # Extract link
-        link = link_tag["href"] if link_tag else "No Link"
+        link = link_tag["href"] if link_tag else ""
 
         # Extract description/snippet
-        description = desc_tag.get_text(strip=True) if desc_tag else "No description available"
+        description = desc_tag.get_text(strip=True) if desc_tag else ""
 
         # Extract news source
-        news_source = source_tag.get_text(strip=True) if source_tag else "Unknown Source"
+        news_source = source_tag.get_text(strip=True) if source_tag else ""
 
         # ✅ Fetch image from the news article's metadata
         image_url = fetch_image_from_meta(link)

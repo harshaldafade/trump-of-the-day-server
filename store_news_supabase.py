@@ -46,7 +46,7 @@ def save_news_by_date(target_date):
             print(f"❌ Error inserting data for {target_date}: {e}")
 
 if __name__ == "__main__":
-    start_date = datetime.date(2025, 1, 20)  # Start scraping from January 20th, 2025
+    start_date = datetime.date.today()
     end_date = datetime.date.today()
 
     for single_date in (start_date + datetime.timedelta(days=n) for n in range((end_date - start_date).days + 1)):
