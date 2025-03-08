@@ -46,10 +46,31 @@ def save_news_by_date(target_date):
             print(f"❌ Error inserting data for {target_date}: {e}")
 
 if __name__ == "__main__":
-    start_date = datetime.date.today()
-    end_date = datetime.date.today()
+    # Get input from user for date range
+    try:
+        start_date_str = input("Enter start date (YYYY-MM-DD): ")
+        end_date_str = input("Enter end date (YYYY-MM-DD): ")
 
-    for single_date in (start_date + datetime.timedelta(days=n) for n in range((end_date - start_date).days + 1)):
-        print(f"📅 Fetching and storing news for {single_date}")
-        save_news_by_date(single_date)
-        time.sleep(2)  # Prevent Google from blocking requests
+        # Convert string input to date objects
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+
+        # Validate date range
+        if start_date > end_date:
+            print("Error: Start date cannot be after end date.")
+            exit(1)
+
+        print(f"🔍 Processing news from {start_date} to {end_date}")
+
+        # Loop through each date in the range
+        for single_date in (start_date + datetime.timedelta(days=n) for n in range((end_date - start_date).days + 1)):
+            print(f"📅 Fetching and storing news for {single_date}")
+            save_news_by_date(single_date)
+            time.sleep(2)  # Prevent Google from blocking requests
+
+            print(f"✅ Completed processing news for date range: {start_date} to {end_date}")
+
+    except ValueError as e:
+        print(f"Error: Invalid date format. Please use YYYY-MM-DD format. Details: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
