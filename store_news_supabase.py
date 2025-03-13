@@ -49,11 +49,13 @@ if __name__ == "__main__":
     # Get input from user for date range
     try:
         start_date_str = input("Enter start date (YYYY-MM-DD): ")
-        end_date_str = input("Enter end date (YYYY-MM-DD): ")
-
-        # Convert string input to date objects
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        if start_date_str.lower() =='today' or start_date_str.lower() =='t':
+            start_date = datetime.date.today()
+            end_date = datetime.date.today()
+        else:
+            end_date_str = input("Enter end date (YYYY-MM-DD): ")
+            # Convert string input to date objects
+            start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
 
         # Validate date range
         if start_date > end_date:
