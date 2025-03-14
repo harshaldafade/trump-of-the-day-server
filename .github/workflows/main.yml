@@ -2,7 +2,7 @@ name: Daily News Job
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # Runs every day at noon UTC
+    - cron: '0 14 * * *'  # Runs every day at noon UTC
   workflow_dispatch:  # Allows manual triggering
 
 jobs:
