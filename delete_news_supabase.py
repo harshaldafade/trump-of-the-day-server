@@ -42,42 +42,64 @@ def delete_news_by_date(target_date):
         return 0
 
 if __name__ == "__main__":
-    # Get input from user for date range
-    try:
-        start_date_str = input("Enter start date (YYYY-MM-DD): ")
-        end_date_str = input("Enter end date (YYYY-MM-DD): ")
+   import argparse
+   
+   # Set up argument parser
+   parser = argparse.ArgumentParser(description="Delete news articles by date range")
+   parser.add_argument("--start", type=str, help="Start date in YYYY-MM-DD format")
+   parser.add_argument("--end", type=str, help="End date in YYYY-MM-DD format")
+   parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+   
+   args = parser.parse_args()
+   
+   try:
+       # Default to today's date if no arguments provided
+       if args.start is None and args.end is None:
+           today = datetime.date.today()
+           start_date = today
+           end_date = today
+           print(f"🔍 No dates provided. Processing news for today: {today}")
+       else:
+           # If only one date is provided, use it for both start and end
+           if args.start and not args.end:
+               args.end = args.start
+           elif args.end and not args.start:
+               args.start = args.end
+               
+           # Convert string input to date objects
+           start_date = datetime.datetime.strptime(args.start, "%Y-%m-%d").date()
+           end_date = datetime.datetime.strptime(args.end, "%Y-%m-%d").date()
+           
+           # Validate date range
+           if start_date > end_date:
+               print("Error: Start date cannot be after end date.")
+               exit(1)
+               
+           print(f"🔍 Processing date range: {start_date} to {end_date}")
+       
+       # Ask for confirmation before deleting (unless --force flag is used)
+       if not args.force:
+           print(f"⚠️ You are about to delete all news articles from {start_date} to {end_date}")
+           confirmation = input("Are you sure you want to proceed? (yes/no): ").lower()
+           
+           if confirmation != 'yes':
+               print("Operation cancelled.")
+               exit(0)
 
-        # Convert string input to date objects
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+       print(f"🗑️ Deleting news from {start_date} to {end_date}")
 
-        # Validate date range
-        if start_date > end_date:
-            print("Error: Start date cannot be after end date.")
-            exit(1)
+       total_deleted = 0
+       # Loop through each date in the range
+       for single_date in (start_date + datetime.timedelta(days=n) for n in range((end_date - start_date).days + 1)):
+           print(f"📅 Processing delete operation for {single_date}")
+           deleted = delete_news_by_date(single_date)
+           total_deleted += deleted
+           time.sleep(1)  # Small delay between operations
 
-        # Ask for confirmation before deleting
-        print(f"⚠️ You are about to delete all news articles from {start_date} to {end_date}")
-        confirmation = input("Are you sure you want to proceed? (yes/no): ").lower()
-        
-        if confirmation != 'yes':
-            print("Operation cancelled.")
-            exit(0)
-
-        print(f"🗑️ Deleting news from {start_date} to {end_date}")
-
-        total_deleted = 0
-        # Loop through each date in the range
-        for single_date in (start_date + datetime.timedelta(days=n) for n in range((end_date - start_date).days + 1)):
-            print(f"📅 Processing delete operation for {single_date}")
-            deleted = delete_news_by_date(single_date)
-            total_deleted += deleted
-            time.sleep(1)  # Small delay between operations
-
-        print(f"✅ Completed deleting news for date range: {start_date} to {end_date}")
-        print(f"📊 Total articles deleted: {total_deleted}")
-
-    except ValueError as e:
-        print(f"Error: Invalid date format. Please use YYYY-MM-DD format. Details: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+       print(f"✅ Completed deleting news for date range: {start_date} to {end_date}")
+       print(f"📊 Total articles deleted: {total_deleted}")
+   
+   except ValueError as e:
+       print(f"Error: Invalid date format. Please use YYYY-MM-DD format. Details: {e}")
+   except Exception as e:
+       print(f"An unexpected error occurred: {e}")

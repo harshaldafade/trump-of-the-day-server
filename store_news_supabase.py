@@ -30,7 +30,7 @@ def save_news_by_date(target_date):
 
     for article in news:
         data = {
-            "created_at": datetime.datetime.utcnow().isoformat(),  # UTC timestamp
+            "created_at": datetime.datetime.now(datetime.UTC).isoformat(),  # UTC timestamp
             "date": article["date"],  # The actual news date
             "title": article["title"],
             "description": article["description"],
@@ -46,30 +46,48 @@ def save_news_by_date(target_date):
             print(f"❌ Error inserting data for {target_date}: {e}")
 
 if __name__ == "__main__":
-    # Get input from user for date range
+    import argparse
+    
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Fetch and store news articles by date range")
+    parser.add_argument("--start", type=str, help="Start date in YYYY-MM-DD format")
+    parser.add_argument("--end", type=str, help="End date in YYYY-MM-DD format")
+    
+    args = parser.parse_args()
+    
     try:
-        start_date_str = input("Enter start date (YYYY-MM-DD): ")
-        end_date_str = input("Enter end date (YYYY-MM-DD): ")
-
-        # Convert string input to date objects
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
-
-        # Validate date range
-        if start_date > end_date:
-            print("Error: Start date cannot be after end date.")
-            exit(1)
-
-        print(f"🔍 Processing news from {start_date} to {end_date}")
-
+        # Default to today's date if no arguments provided
+        if args.start is None and args.end is None:
+            today = datetime.date.today()
+            start_date = today
+            end_date = today
+            print(f"🔍 No dates provided. Processing news for today: {today}")
+        else:
+            # If only one date is provided, use it for both start and end
+            if args.start and not args.end:
+                args.end = args.start
+            elif args.end and not args.start:
+                args.start = args.end
+                
+            # Convert string input to date objects
+            start_date = datetime.datetime.strptime(args.start, "%Y-%m-%d").date()
+            end_date = datetime.datetime.strptime(args.end, "%Y-%m-%d").date()
+            
+            # Validate date range
+            if start_date > end_date:
+                print("Error: Start date cannot be after end date.")
+                exit(1)
+                
+            print(f"🔍 Processing news from {start_date} to {end_date}")
+        
         # Loop through each date in the range
         for single_date in (start_date + datetime.timedelta(days=n) for n in range((end_date - start_date).days + 1)):
             print(f"📅 Fetching and storing news for {single_date}")
             save_news_by_date(single_date)
             time.sleep(2)  # Prevent Google from blocking requests
-
-            print(f"✅ Completed processing news for date range: {start_date} to {end_date}")
-
+        
+        print(f"✅ Completed processing news for date range: {start_date} to {end_date}")
+    
     except ValueError as e:
         print(f"Error: Invalid date format. Please use YYYY-MM-DD format. Details: {e}")
     except Exception as e:
