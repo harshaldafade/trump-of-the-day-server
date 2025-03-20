@@ -17,3 +17,9 @@ $ pip install -r requirements.txt
 SUPABASE_URL=<your supabase url>
 SUPABASE_KEY=<your supabase key>
 ```
+
+# Start Server
+
+```bash
+$ npx ts-node server.ts
+```
