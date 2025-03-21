@@ -1,5 +1,5 @@
 from datetime import datetime, UTC
-from utils import Utility
+from lib.utils import Utility
 from news_scraper import fetch_news_by_date
 
 class NewsStorage:

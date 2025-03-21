@@ -1,5 +1,5 @@
 from datetime import datetime
-from utils import Utility
+from lib.utils import Utility
 
 class NewsDeletion:
     """Class for deleting news from Supabase."""
