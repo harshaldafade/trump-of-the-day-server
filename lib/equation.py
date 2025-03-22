@@ -11,7 +11,8 @@ nltk.download('stopwords')
 nltk.download('punkt_tab')
 
 class RankingEquation:
-    def __init__(self, full_text, title, source, published_at, upvotes, downvotes, shares, comments):
+    def __init__(self, id, full_text, title, source, published_at, upvotes, downvotes, shares, comments):
+        self.id = id 
         self.full_text = full_text
         self.title = title
         self.source = source
