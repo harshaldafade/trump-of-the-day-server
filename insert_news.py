@@ -1,5 +1,5 @@
 from datetime import datetime, UTC
-from lib.utils import Utility
+from lib.utils import Utility, DatabaseConnection
 from news_scraper import fetch_news_by_date
 
 class NewsStorage:
@@ -7,6 +7,7 @@ class NewsStorage:
     
     def __init__(self):
         self.utils = Utility(table_name="news")
+        self.db = self.utils.db  # Use the DatabaseConnection instance from Utility
     
     def save_news_by_date(self, target_date):
         """
@@ -18,7 +19,7 @@ class NewsStorage:
         Returns:
             Number of articles saved
         """
-        news = fetch_news_by_date(target_date)
+        news = fetch_news_by_date(target_date) #news_scraper.py
         if not news:
             print(f"⚠️ No news fetched for {target_date}.")
             return 0
@@ -36,8 +37,8 @@ class NewsStorage:
             }
 
             try:
-                response = self.utils.supabase.table(self.utils.table_name).insert(data).execute()
-                # print(f"✅ Inserted news for {target_date}: {article['title']}")
+                # Use the database connection insert_record method
+                self.db.insert_record(data)
                 articles_saved += 1
             except Exception as e:
                 print(f"❌ Error inserting data for {target_date}: {e}")

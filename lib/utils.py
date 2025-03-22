@@ -7,23 +7,10 @@ import time
 class Utility:
     """Utility class for Supabase operations common to both news storage and deletion."""
     
-    def __init__(self, table_name="news"):
-        # Load environment variables
-        load_dotenv()
-        
-        # Supabase credentials
-        self.supabase_url = os.getenv("SUPABASE_URL")
-        self.supabase_key = os.getenv("SUPABASE_KEY")
-        
-        if not self.supabase_url or not self.supabase_key:
-            raise ValueError("⚠️ Supabase credentials are missing. Check your .env file.")
-        
-        # Connect to Supabase
-        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-        
-        # Table Name
+    def __init__(self, table_name):
+        # Initialize the database connection
+        self.db = DatabaseConnection(table_name)
         self.table_name = table_name
-    
     
     def get_date_range(self, start_date_str=None, end_date_str=None):
         """
@@ -97,3 +84,146 @@ class Utility:
         
         print(f"✅ Completed processing for date range: {start_date} to {end_date}")
         return total_count
+
+class DatabaseConnection:
+    """Functions for interacting with Supabase Database"""
+    def __init__(self, table_name):
+        # Load environment variables
+        load_dotenv()
+        
+        # Supabase credentials
+        self.supabase_url = os.getenv("SUPABASE_URL")
+        self.supabase_key = os.getenv("SUPABASE_KEY")
+        
+        if not self.supabase_url or not self.supabase_key:
+            raise ValueError("⚠️ Supabase credentials are missing. Check your .env file.")
+        
+        # Connect to Supabase
+        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+        
+        # Table Name
+        self.table_name = table_name
+    
+    def insert_record(self, data):
+        """
+        Insert a record into the database table.
+        
+        Args:
+            data (dict): The data to insert
+            
+        Returns:
+            dict: The response from the database
+            
+        Raises:
+            Exception: If an error occurs during insertion
+        """
+        try:
+            response = self.supabase.table(self.table_name).insert(data).execute()
+            return response
+        except Exception as e:
+            raise Exception(f"Error inserting data: {e}")
+    
+    def update_record(self, id, data):
+        """
+        Update a record in the database table.
+        
+        Args:
+            id: The record ID to update
+            data (dict): The data to update
+            
+        Returns:
+            dict: The response from the database
+            
+        Raises:
+            Exception: If an error occurs during update
+        """
+        try:
+            response = self.supabase.table(self.table_name).update(data).eq("id", id).execute()
+            return response
+        except Exception as e:
+            raise Exception(f"Error updating data: {e}")
+    
+    def delete_record(self, id):
+        """
+        Delete a record from the database table.
+        
+        Args:
+            id: The record ID to delete
+            
+        Returns:
+            dict: The response from the database
+            
+        Raises:
+            Exception: If an error occurs during deletion
+        """
+        try:
+            response = self.supabase.table(self.table_name).delete().eq("id", id).execute()
+            return response
+        except Exception as e:
+            raise Exception(f"Error deleting data: {e}")
+    
+    def delete_by_date(self, date):
+        """
+        Delete records for a specific date.
+        
+        Args:
+            date: The date to delete records for (as a string or date object)
+            
+        Returns:
+            int: Number of records deleted
+            
+        Raises:
+            Exception: If an error occurs during deletion
+        """
+        try:
+            # Ensure date is in string format if a date object is passed
+            if isinstance(date, datetime.date):
+                date = date.strftime("%Y-%m-%d")
+            
+            response = self.supabase.table(self.table_name).delete().eq("date", date).execute()
+            return len(response.data) if hasattr(response, 'data') else 0
+        except Exception as e:
+            raise Exception(f"Error deleting data for date {date}: {e}")
+    
+    def fetch_records(self, limit=100, offset=0):
+        """
+        Fetch records from the database table with pagination.
+        
+        Args:
+            limit (int): Maximum number of records to fetch
+            offset (int): Number of records to skip
+            
+        Returns:
+            list: The fetched records
+            
+        Raises:
+            Exception: If an error occurs during fetching
+        """
+        try:
+            response = self.supabase.table(self.table_name).select("*").limit(limit).offset(offset).execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Error fetching data: {e}")
+    
+    def fetch_by_date(self, date):
+        """
+        Fetch records for a specific date.
+        
+        Args:
+            date: The date to fetch records for (as a string or date object)
+            
+        Returns:
+            list: The fetched records
+            
+        Raises:
+            Exception: If an error occurs during fetching
+        """
+        try:
+            # Ensure date is in string format if a date object is passed
+            if isinstance(date, datetime.date):
+                date = date.strftime("%Y-%m-%d")
+            
+            response = self.supabase.table(self.table_name).select("*").eq("date", date).execute()
+            return response.data
+        except Exception as e:
+            raise Exception(f"Error fetching data for date {date}: {e}")

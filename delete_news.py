@@ -1,11 +1,11 @@
-from datetime import datetime
-from lib.utils import Utility
+from lib.utils import Utility, DatabaseConnection
 
 class NewsDeletion:
     """Class for deleting news from Supabase."""
     
     def __init__(self):
         self.utils = Utility(table_name="news")
+        self.db = self.utils.db  # Use the DatabaseConnection instance from Utility
     
     def delete_news_by_date(self, target_date):
         """
@@ -17,23 +17,18 @@ class NewsDeletion:
         Returns:
             Number of articles deleted
         """
-        # Format the date to match the date format in the database
-        formatted_date = self.utils.format_date(target_date)
-        
         try:
-            # Query to find and delete news with matching date
-            response = self.utils.supabase.table(self.utils.table_name).delete().eq("date", formatted_date).execute()
+            # Use the database connection delete_by_date method
+            deleted_count = self.db.delete_by_date(target_date)
             
-            # Check how many records were deleted
-            deleted_count = len(response.data)
             if deleted_count > 0:
-                print(f"✅ Deleted {deleted_count} news articles for {formatted_date}")
+                print(f"✅ Deleted {deleted_count} news articles for {target_date}")
             else:
-                print(f"ℹ️ No news articles found for {formatted_date}")
+                print(f"ℹ️ No news articles found for {target_date}")
                 
             return deleted_count
         except Exception as e:
-            print(f"❌ Error deleting data for {formatted_date}: {e}")
+            print(f"❌ Error deleting data for {target_date}: {e}")
             return 0
     
     def run(self, start_date_str=None, end_date_str=None, confirm=False):
