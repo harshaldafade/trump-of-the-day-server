@@ -1,8 +1,8 @@
-# ✅ news_scraper.py
 import requests
 from bs4 import BeautifulSoup
 import hashlib
 import datetime
+import urllib.parse
 
 GOOGLE_NEWS_URL = "https://www.google.com/search?q=Donald+Trump&tbm=nws&tbs=cdr:1,cd_min:{},cd_max={}"
 HEADERS = {
@@ -32,12 +32,22 @@ def fetch_full_text(url):
             return ""
         soup = BeautifulSoup(response.text, "html.parser")
         paragraphs = soup.find_all("p")
-        return "\n".join(p.get_text() for p in paragraphs)
+        return "\n".join(p.get_text() for p in paragraphs if p.get_text().strip())
     except requests.RequestException:
         return ""
 
 def generate_url_hash(url):
     return hashlib.sha256(url.encode()).hexdigest()
+
+def parse_actual_url(google_url):
+    """
+    Parses the actual URL from a Google News link.
+    Example: '/url?q=https://example.com/article&sa=U&ved=...'
+    """
+    if google_url.startswith("/url?q="):
+        url = google_url.split("&")[0].replace("/url?q=", "")
+        return urllib.parse.unquote(url)
+    return google_url
 
 def fetch_news_by_date(target_date):
     formatted_date = target_date.strftime("%m/%d/%Y")
@@ -46,24 +56,33 @@ def fetch_news_by_date(target_date):
     if response.status_code != 200:
         print(f"❌ Failed to fetch news for {formatted_date}. Status Code: {response.status_code}")
         return []
+
     soup = BeautifulSoup(response.text, "html.parser")
     articles = soup.select("div.SoaBEf")[:20]  # Top 20 only
     if not articles:
         print(f"⚠️ No articles found for {formatted_date}.")
         return []
+
     news_list = []
     for article in articles:
         title_tag = article.select_one("div.n0jPhd")
         link_tag = article.select_one("a.WlydOe")
         desc_tag = article.select_one("div.GI74Re")
         source_tag = article.select_one("div.MgUUmf span")
+
         title = title_tag.get_text(strip=True) if title_tag else ""
-        link = link_tag["href"] if link_tag else ""
+        raw_link = link_tag["href"] if link_tag else ""
+        link = parse_actual_url(raw_link)
         description = desc_tag.get_text(strip=True) if desc_tag else ""
         source = source_tag.get_text(strip=True) if source_tag else ""
+        
+        if not link:
+            continue
+
         image_url = fetch_image_from_meta(link)
         full_text = fetch_full_text(link)
         url_hash = generate_url_hash(link)
+        
         news_list.append({
             "title": title,
             "url": link,

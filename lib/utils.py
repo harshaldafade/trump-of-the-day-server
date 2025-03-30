@@ -227,3 +227,12 @@ class DatabaseConnection:
             return response.data
         except Exception as e:
             raise Exception(f"Error fetching data for date {date}: {e}")
+        
+    def select_record(self, column, value):
+        """Check for duplicates by column and value."""
+        try:
+            response = self.supabase.table(self.table_name).select("*").eq(column, value).execute()
+            return response.data if response.data else None
+        except Exception as e:
+            print(f"❌ Error selecting record: {e}")
+            return None
