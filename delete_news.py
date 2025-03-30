@@ -4,7 +4,7 @@ class NewsDeletion:
     """Class for deleting news from Supabase."""
     
     def __init__(self):
-        self.utils = Utility(table_name="news")
+        self.utils = Utility(table_name="news_articles")
         self.db = self.utils.db  # Use the DatabaseConnection instance from Utility
     
     def delete_news_by_date(self, target_date):
@@ -19,7 +19,7 @@ class NewsDeletion:
         """
         try:
             # Use the database connection delete_by_date method
-            deleted_count = self.db.delete_by_date(target_date)
+            deleted_count = self.db.delete_by_date(target_date,"published_at")
             
             if deleted_count > 0:
                 print(f"✅ Deleted {deleted_count} news articles for {target_date}")

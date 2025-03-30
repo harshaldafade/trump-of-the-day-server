@@ -162,7 +162,7 @@ class DatabaseConnection:
         except Exception as e:
             raise Exception(f"Error deleting data: {e}")
     
-    def delete_by_date(self, date):
+    def delete_by_date(self, date, date_column_name):
         """
         Delete records for a specific date.
         
@@ -180,7 +180,7 @@ class DatabaseConnection:
             if isinstance(date, datetime.date):
                 date = date.strftime("%Y-%m-%d")
             
-            response = self.supabase.table(self.table_name).delete().eq("date", date).execute()
+            response = self.supabase.table(self.table_name).delete().filter(date_column_name, "gte", f"{date} 00:00:00").filter(date_column_name, "lt", f"{date} 23:59:59").execute()
             return len(response.data) if hasattr(response, 'data') else 0
         except Exception as e:
             raise Exception(f"Error deleting data for date {date}: {e}")
