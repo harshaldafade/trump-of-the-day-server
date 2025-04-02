@@ -1,97 +1,50 @@
-// auth.ts
-import express from 'express';
-import passport from 'passport';
-import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
-import dotenv from 'dotenv';
-import { findUserById, createUser, findUserByEmail } from './userDb';
+const express = require('express');
+const session = require('express-session');
+const passport = require('passport');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const authRouter = require('./auth'); // Make sure auth.ts uses `export = router`
 
-// Load environment variables
 dotenv.config();
 
-const router = express.Router();
+const app = express();
+const PORT = process.env.PORT || 3001;
 
-// Check if required environment variables are set
-if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-  console.error('Missing required environment variables for Google OAuth');
-  process.exit(1);
-}
-
-// Configure Passport Google OAuth Strategy
-passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3001/api/auth/google/callback',
-  scope: ['profile', 'email']
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    // Find or create user
-    const email = profile.emails?.[0]?.value;
-    if (!email) {
-      return done(new Error('No email found in Google profile'), null);
-    }
-
-    let user = await findUserByEmail(email);
-    
-    if (!user) {
-      // Create new user
-      user = await createUser({
-        email,
-        name: profile.displayName,
-        googleId: profile.id,
-        avatar: profile.photos?.[0]?.value
-      });
-    }
-    
-    return done(null, user);
-  } catch (error) {
-    return done(error, null);
-  }
+// ✅ CORS setup
+app.use(cors({
+  origin: process.env.CLIENT_URL, 
+  credentials: true,
 }));
 
-// Serialize and deserialize user
-passport.serializeUser((user, done) => {
-  done(null, user.id);
+// ✅ Body parsing
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ✅ Session configuration
+app.use(session({
+  secret: 'your-secret-key', // ideally store this in process.env.SECRET
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: false, // true if using HTTPS in production
+    httpOnly: true,
+    maxAge: 1000 * 60 * 60 * 24, // 1 day
+  },
+}));
+
+// ✅ Passport initialization
+app.use(passport.initialize());
+app.use(passport.session());
+
+// ✅ Auth routes (make sure auth.ts exports with `export = router`)
+app.use('/api/auth', authRouter);
+
+// ✅ Health check route
+app.get('/', (_req, res) => {
+  res.send('🚀 Backend is running!');
 });
 
-passport.deserializeUser(async (id, done) => {
-  try {
-    const user = await findUserById(id);
-    done(null, user);
-  } catch (error) {
-    done(error, null);
-  }
+// ✅ Start the server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
-
-// Auth routes
-router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-
-router.get('/google/callback',
-  passport.authenticate('google', { 
-    failureRedirect: process.env.CLIENT_URL ? `${process.env.CLIENT_URL}/login` : 'http://localhost:3000/login'
-  }),
-  (req, res) => {
-    // Successful authentication
-    res.redirect(process.env.CLIENT_URL || 'http://localhost:3000');
-  }
-);
-
-// Get current user
-router.get('/user', (req, res) => {
-  if (req.isAuthenticated()) {
-    res.json(req.user);
-  } else {
-    res.status(401).json({ error: 'Not authenticated' });
-  }
-});
-
-// Logout
-router.get('/logout', (req, res) => {
-  req.logout((err) => {
-    if (err) {
-      return res.status(500).json({ error: 'Error during logout' });
-    }
-    res.redirect(process.env.CLIENT_URL || 'http://localhost:3000');
-  });
-});
-
-export default router;

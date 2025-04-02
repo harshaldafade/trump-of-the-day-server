@@ -26,6 +26,19 @@ Install server
 ```bash
 $ cd server
 $ npm install
+$ touch .env
+```
+Create env with following variables in server
+```
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_CALLBACK_URL=
+
+# Supabase connection details
+SUPABASE_URL=
+SUPABASE_KEY=
+CLIENT_URL=h
+
 ```
 Run server
 ```bash
