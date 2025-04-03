@@ -1,7 +1,8 @@
 {
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "prebuild": "npm install"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.4",
