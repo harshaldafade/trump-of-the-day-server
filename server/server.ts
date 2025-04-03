@@ -1,34 +1,39 @@
-const express = require('express');
-const session = require('express-session');
-const passport = require('passport');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const authRouter = require('./auth'); // Make sure auth.ts uses `export = router`
+import express, { json, urlencoded ,Request, Response, Application } from 'express';
+import session from 'express-session';
+import passport from 'passport';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import authRouter from './auth';
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 3001;
+const app: Application = express();
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
+
+if (!process.env.CLIENT_URL || !process.env.SECRET) {
+  console.error('❌ Missing required environment variables');
+  process.exit(1);
+}
 
 // ✅ CORS setup
 app.use(cors({
-  origin: process.env.CLIENT_URL, 
+  origin: process.env.CLIENT_URL,
   credentials: true,
 }));
 
 // ✅ Body parsing
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(json());
+app.use(urlencoded({ extended: true }));
 
 // ✅ Session configuration
 app.use(session({
-  secret: 'your-secret-key', // ideally store this in process.env.SECRET
+  secret: process.env.SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // true if using HTTPS in production
+    secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
-    maxAge: 1000 * 60 * 60 * 24, // 1 day
+    maxAge: 1000 * 60 * 60 * 24,
   },
 }));
 
@@ -36,11 +41,11 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ✅ Auth routes (make sure auth.ts exports with `export = router`)
+// ✅ Auth routes
 app.use('/api/auth', authRouter);
 
 // ✅ Health check route
-app.get('/', (_req, res) => {
+app.get('/', (_req: Request, res: Response) => {
   res.send('🚀 Backend is running!');
 });
 

@@ -30,14 +30,21 @@ $ touch .env
 ```
 Create env with following variables in server
 ```
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_CALLBACK_URL=
-
-# Supabase connection details
 SUPABASE_URL=
 SUPABASE_KEY=
-CLIENT_URL=h
+
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+
+
+GOOGLE_CALLBACK_URL=http://localhost:3001/api/auth/google/callback
+CLIENT_URL=http://localhost:3000
+
+PORT=3001
+
+SECRET=
+NODE_ENV=development  # for local development or 'production' for deploying
 
 ```
 Run server
