@@ -1,6 +1,5 @@
 from datetime import datetime, UTC
 import numpy as np
-import pandas as pd
 import textstat
 from sklearn.feature_extraction.text import TfidfVectorizer
 from textblob import TextBlob

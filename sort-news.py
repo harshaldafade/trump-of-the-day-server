@@ -1,6 +1,5 @@
 from lib.equation import RankingEquation
 from lib.utils import DatabaseConnection
-import pandas as pd
 
 weights = {'uniqueness': 0.3, 'engagement': 0.25, 'recency': 0.1, 'verified': 0.1, 'content': 0.15, 'legitimacy': 0.2, 'downvote': 0.3}
 trusted_sources = ['BBC', 'Reuters', 'NYT']

@@ -27,7 +27,6 @@ multidict==6.1.0
 nltk==3.9.1
 numpy==2.2.4
 packaging==24.2
-pandas==2.2.3
 postgrest==0.19.3
 propcache==0.3.0
 psutil==7.0.0
