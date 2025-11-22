@@ -1,75 +1,137 @@
 import requests
 from bs4 import BeautifulSoup
 import datetime
-
-GOOGLE_NEWS_URL = "https://www.google.com/search?q=Donald+Trump&tbm=nws&tbs=cdr:1,cd_min:{},cd_max={}"
+import json
+import re
+GOOGLE_NEWS_SEARCH_URL = (
+    "https://www.google.com/search?q=Donald+Trump&tbm=nws&tbs=cdr:1,cd_min:{},cd_max:{}"
+)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.6778.204 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Referer": "https://www.google.com/"
 }
+def extract_css_background(div):
+    """Extracts real thumbnail from Google's inline CSS background-image."""
+    if not div:
+        return ""
+    style = div.get("style", "")
+
+    # background-image:url("...")
+    m1 = re.search(r'background-image:\s*url\([\'"]?(.*?)[\'"]?\)', style)
+    if m1:
+        return m1.group(1)
+
+    # background:url("...")
+    m2 = re.search(r'background:\s*url\([\'"]?(.*?)[\'"]?\)', style)
+    if m2:
+        return m2.group(1)
+
+    return ""
 
 def fetch_image_from_meta(url):
-    """Fetches the main image URL from a news article using Open Graph and Twitter meta tags."""
     try:
-        response = requests.get(url, headers=HEADERS, timeout=5)
-        if response.status_code != 200:
+        r = requests.get(url, headers=HEADERS, timeout=6)
+        if r.status_code != 200:
             return ""
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        # OG & Twitter image tags
+        for tag in ["og:image", "twitter:image"]:
+            meta = soup.find("meta", property=tag)
+            if meta and meta.get("content"):
+                return meta["content"]
 
-        # Check Open Graph Image
-        og_image = soup.find("meta", property="og:image")
-        if og_image and og_image.get("content"):
-            return og_image["content"]
+        # JSON-LD fallback
+        ld_json_blocks = soup.find_all("script", type="application/ld+json")
+        for block in ld_json_blocks:
+            try:
+                data = json.loads(block.text.strip())
 
-        # Check Twitter Image
-        twitter_image = soup.find("meta", property="twitter:image")
-        if twitter_image and twitter_image.get("content"):
-            return twitter_image["content"]
+                # JSON-LD single dict
+                if isinstance(data, dict):
+                    if "image" in data:
+                        img = data["image"]
+                        if isinstance(img, str):
+                            return img
+                        if isinstance(img, dict):
+                            return img.get("url", "")
 
-    except requests.RequestException:
+                # JSON-LD list
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "image" in item:
+                            img = item["image"]
+                            if isinstance(img, str):
+                                return img
+                            if isinstance(img, dict):
+                                return img.get("url", "")
+
+            except:
+                continue
+
+    except:
         return ""
 
     return ""
 
 def fetch_news_by_date(target_date):
-    """Scrapes Google News for Trump-related news on a specific date."""
     formatted_date = target_date.strftime("%m/%d/%Y")
-    url = GOOGLE_NEWS_URL.format(formatted_date, formatted_date)
+    url = GOOGLE_NEWS_SEARCH_URL.format(formatted_date, formatted_date)
+    print("🔍 Search URL:", url)
 
     response = requests.get(url, headers=HEADERS)
-    if response.status_code != 200:
-        print(f"❌ Failed to fetch news for {formatted_date}. Status Code: {response.status_code}")
-        return []
-
     soup = BeautifulSoup(response.text, "html.parser")
-    articles = soup.select("div.SoaBEf")  # Google News article container
-
-    if not articles:
-        print(f"⚠️ No articles found for {formatted_date}.")
-        return []
+    # Google blocks
+    article_blocks = soup.select("div.SoaBEf")
+    if not article_blocks:
+        article_blocks = soup.select("g-card")
 
     news_list = []
-    for article in articles:
-        title_tag = article.select_one("div.n0jPhd")
-        link_tag = article.select_one("a.WlydOe")
-        desc_tag = article.select_one("div.GI74Re")
-        source_tag = article.select_one("div.MgUUmf span")
 
-        # Extract title
+    for block in article_blocks:
+        title_tag = block.select_one(".n0jPhd")
         title = title_tag.get_text(strip=True) if title_tag else ""
 
-        # Extract link
-        link = link_tag["href"] if link_tag else ""
-
-        # Extract description/snippet
+        desc_tag = block.select_one(".UqSP2b")
         description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-        # Extract news source
+        source_tag = block.select_one(".MgUUmf span")
         news_source = source_tag.get_text(strip=True) if source_tag else ""
+        a_tag = block.find("a", href=True)
+        link = a_tag["href"] if a_tag else ""
+        thumb = ""
 
-        # ✅ Fetch image from the news article's metadata
-        image_url = fetch_image_from_meta(link)
+        # 1. CSS background-image (new Google layout)
+        thumb_div = block.select_one(".T16mof") or block.select_one(".uhHOwf")
+        thumb = extract_css_background(thumb_div)
+
+        # 2. <img> tag fallback
+        img_tag = block.select_one(".uhHOwf img")
+        if not thumb and img_tag:
+
+            # A: data-src (common)
+            if img_tag.get("data-src"):
+                thumb = img_tag["data-src"]
+
+            # B: normal src that is not transparent GIF
+            elif img_tag.get("src") and not img_tag["src"].startswith("data:image/gif"):
+                thumb = img_tag["src"]
+
+            # C: REAL BASE64 JPEG thumbnail
+            #     - real images start with /9j/ (JPEG header)
+            #     - placeholders never start with /9j/
+            elif img_tag.get("src", "").startswith("data:image/jpeg;base64,/9j/"):
+                thumb = img_tag["src"]
+
+        # 3. LAST RESORT → fetch OG/Twitter/JSON-LD from article
+        image_url = thumb or (fetch_image_from_meta(link) if link else "")
 
         news_list.append({
             "title": title,
