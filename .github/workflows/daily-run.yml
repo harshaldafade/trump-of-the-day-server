@@ -1,4 +1,4 @@
-name: Daily News Job
+name: Run Docker image for Daily News Job
 
 on:
   schedule:
