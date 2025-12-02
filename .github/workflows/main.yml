@@ -1,8 +1,9 @@
+# Legacy cron job 
 name: Daily News Job
 
 on:
-  schedule:
-    - cron: '0 14 * * *'  # Runs every day at 14:00 UTC
+  # schedule:
+  #   - cron: '0 14 * * *'  # Runs every day at 14:00 UTC
   workflow_dispatch:  # Allows manual triggering
 
 jobs:
