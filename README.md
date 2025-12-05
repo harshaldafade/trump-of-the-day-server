@@ -1,5 +1,9 @@
 # Server for trumpoftheday.com
  Backend, scraper, ranking algorithm
+ 
+![Docker Image Build](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/build-push.yml?label=Docker%20Image%20Build)
+![Daily News Update](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/daily-run.yml?label=Daily%20News%20Update)
+
 
 ## Install Scraper and Ranking algorithm
 1. Create and activate virtual environment
