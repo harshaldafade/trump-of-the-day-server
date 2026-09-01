@@ -4,6 +4,10 @@
 ![Docker Image Build](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/build-push.yml?label=Docker%20Image%20Build)
 ![Daily News Update](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/daily-run.yml?label=Daily%20News%20Update)
 
+## Documentation
+
+-   [lib/README.md](lib/README.md) — every function in `lib/utils.py` (the Neon database access layer), with usage examples
+-   [.github/README.md](.github/README.md) — what each CI workflow, issue template, and policy file in `.github/` does
 
 ## Install Scraper and Ranking algorithm
 1. Create and activate virtual environment
@@ -16,12 +20,21 @@ $ source env/bin/activate
 $ pip install -r requirements.txt
 ```
 
-3. Create an .env file for supabase secrets
+3. Create an .env file for the Neon database connection
 ```
-# Supabase connection details
-SUPABASE_URL=<your supabase url>
-SUPABASE_KEY=<your supabase key>
+# Neon Postgres connection details
+DATABASE_URL=<your neon connection string>
 ```
+
+## News Scraper
+`news_scraper.py` pulls Trump-related news from two independent sources and merges/deduplicates the results:
+
+-   **Google News RSS** (`news.google.com/rss/search`) — a lightweight, sanctioned feed endpoint. Its article links are Google redirect URLs that can't be resolved to the real article server-side, so entries from this source keep the Google link but have no thumbnail/description.
+-   **[GDELT DOC 2.0 API](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)** (free, no API key) — the primary source; it returns real article URLs, direct thumbnails (`socialimage`), and has full historical coverage. GDELT asks for at least one request every 5 seconds, so the scraper enforces a 6-second minimum between its own requests automatically.
+
+For each article missing a description, the scraper visits the real article page (skipping unresolvable Google links) to pull `og:description`/`twitter:description`/JSON-LD, filling in the thumbnail too if GDELT didn't supply one. All HTTP requests go through a session with retry/backoff on 429/5xx responses and a short fuse on plain connection failures.
+
+There's no headless browser or Selenium/Chrome dependency — everything is plain HTTP.
 
 ## Install and Start Server
 The server is created using express js and currently uses [Supabase](https://supabase.com/). In recent future, we plan to move to an [EC2 Instance](https://aws.amazon.com/ec2/).
@@ -56,8 +69,8 @@ Run server
 $ npx ts-node server.ts
 ```
 ## Run insert script
-The `insert_news` script fetches and stores news articles in Supabase
-for a given date range.
+The `insert_news` script fetches and stores news articles in the Neon
+database for a given date range.
 
 ### Running the script
 
@@ -117,9 +130,27 @@ If there is an insertion error, you will see:
 
     ❌ Error inserting data for 2025-09-03: <error_message>
 
+### Maintenance subcommands
+
+`insert_news.py` also supports two maintenance operations, each backed by its own class in the same file:
+
+-   **`backfill-missing`** — finds every date with zero rows between the table's earliest date and yesterday, scrapes all of them (capped at 15 articles/day to match the site's historical density), and inserts everything in a single bulk request rather than one insert per day.
+
+    ``` bash
+    python insert_news.py backfill-missing
+    ```
+
+-   **`repair-descriptions`** — finds existing rows with an empty `description` and a fetchable (non-Google) link, and re-visits each article page to fill one in. Rows behind a Google News redirect link are skipped since they can't be resolved server-side.
+
+    ``` bash
+    python insert_news.py repair-descriptions
+    ```
+
+Both are safe to re-run at any time — they only ever act on rows that still need it.
+
 ## Run delete script
-The `delete_news` script deletes news articles from Supabase for a
-given date range.
+The `delete_news` script deletes news articles from the Neon database
+for a given date range.
 
 ### Running the script
 

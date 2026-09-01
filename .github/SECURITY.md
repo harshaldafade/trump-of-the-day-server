@@ -1,8 +1,6 @@
 # 🔐 Security Policy
 
 ## Reporting a Vulnerability
-If you discover a security vulnerability, please **do not** report it publicly.
-
-Instead, please email **help@trumpoftheday.com** with the details.
+If you discover a security vulnerability, please open a [GitHub issue](https://github.com/harshaldafade/trump-of-the-day-server/issues/new) with the details.
 
 We appreciate your efforts to improve the security of this project.
