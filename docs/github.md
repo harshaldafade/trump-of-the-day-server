@@ -1,4 +1,4 @@
-# .github/
+# `.github/`
 
 GitHub-specific configuration: issue/PR templates, security policy, and CI workflows.
 

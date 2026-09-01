@@ -1,4 +1,4 @@
-# lib/
+# `lib/`
 
 ## `utils.py`
 
@@ -154,4 +154,4 @@ Bulk-updates `description` and `image_url` for many rows in one connection/trans
 
 ## Other files in this directory
 
--   **`equation.py`** — `RankingEquation`, the article-ranking scoring model (sentiment, keywords, grammar, engagement, recency, legitimacy, etc.) used by `sort-news.py`. Not covered here since this README is scoped to `utils.py`.
+-   **`equation.py`** — `RankingEquation`, the article-ranking scoring model (sentiment, keywords, grammar, engagement, recency, legitimacy, etc.) used by `sort-news.py`. Not covered here since this page is scoped to `utils.py`; see [scripts.md](scripts.md#sort-newspy) for a summary alongside `sort-news.py`.

@@ -6,8 +6,13 @@
 
 ## Documentation
 
--   [lib/README.md](lib/README.md) — every function in `lib/utils.py` (the Neon database access layer), with usage examples
--   [.github/README.md](.github/README.md) — what each CI workflow, issue template, and policy file in `.github/` does
+Deeper reference docs live in [`docs/`](docs/):
+
+-   [docs/scripts.md](docs/scripts.md) — every function/class in `news_scraper.py`, `insert_news.py`, `delete_news.py`, `sort-news.py`, `deepseek-test.py`, and what the `Dockerfile` does
+-   [docs/lib.md](docs/lib.md) — every function in `lib/utils.py` (the Neon database access layer), with usage examples
+-   [docs/db.md](docs/db.md) — the Neon schema (`db/schema.sql`) and the read-only-role gotcha documented in it
+-   [docs/server.md](docs/server.md) — the Express/Passport auth backend in `server/`
+-   [docs/github.md](docs/github.md) — what each CI workflow, issue template, and policy file in `.github/` does
 
 ## Install Scraper and Ranking algorithm
 1. Create and activate virtual environment
@@ -37,7 +42,7 @@ For each article missing a description, the scraper visits the real article page
 There's no headless browser or Selenium/Chrome dependency — everything is plain HTTP.
 
 ## Install and Start Server
-The server is created using express js and currently uses [Supabase](https://supabase.com/). In recent future, we plan to move to an [EC2 Instance](https://aws.amazon.com/ec2/).
+The server is created using express js and uses the same Neon Postgres database as the news scraper (see `db/schema.sql`'s `users` table). In recent future, we plan to move hosting to an [EC2 Instance](https://aws.amazon.com/ec2/).
 
 Install server
 ```bash
@@ -47,8 +52,7 @@ $ touch .env
 ```
 Create env with following variables in server
 ```
-SUPABASE_URL=
-SUPABASE_KEY=
+DATABASE_URL=<your neon connection string>
 
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
