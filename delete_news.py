@@ -1,7 +1,7 @@
 from lib.utils import Utility, DatabaseConnection
 
 class NewsDeletion:
-    """Class for deleting news from Supabase."""
+    """Class for deleting news from the Neon database."""
     
     def __init__(self):
         self.utils = Utility(table_name="news")
@@ -9,7 +9,7 @@ class NewsDeletion:
     
     def delete_news_by_date(self, target_date):
         """
-        Deletes news articles for a specific date from Supabase.
+        Deletes news articles for a specific date from the Neon database.
         
         Args:
             target_date: The date to delete news for
@@ -75,12 +75,16 @@ class NewsDeletion:
 
 if __name__ == "__main__":
     import sys
-    
-    # Parse command line arguments if provided
-    args = sys.argv
-    start_date_arg = args[1] if len(args) > 1 else None
-    end_date_arg = args[2] if len(args) > 2 else None
-    force_confirm = True if len(args) > 3 and args[3].lower() in ['--force', '-f', 'yes', 'y'] else False
-    
+
+    # The force flag can appear in any position (e.g. "2025-09-10 --force" with no
+    # end date), so it's pulled out separately rather than assumed to be argv[3].
+    FORCE_FLAGS = {"--force", "-f", "yes", "y"}
+    args = sys.argv[1:]
+    force_confirm = any(a.lower() in FORCE_FLAGS for a in args)
+    date_args = [a for a in args if a.lower() not in FORCE_FLAGS]
+
+    start_date_arg = date_args[0] if len(date_args) > 0 else None
+    end_date_arg = date_args[1] if len(date_args) > 1 else None
+
     deletion = NewsDeletion()
     deletion.run(start_date_arg, end_date_arg, force_confirm)

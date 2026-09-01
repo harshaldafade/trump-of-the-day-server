@@ -3,5 +3,6 @@
 *.pyc
 /env
 *.csv
-
+/db
 !*.keep
+/.claude

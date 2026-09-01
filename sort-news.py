@@ -89,7 +89,7 @@ def main():
     # for i, article in enumerate(sorted_articles[:10], 1):
     #     print(f"{i}. Title: {article.title}, Score: {article.final_score:.4f}")
     
-    # Update scores in Supabase database
+    # Update scores in the Neon database
     update_article_scores_in_database(sorted_articles)
 
 if __name__ == "__main__":

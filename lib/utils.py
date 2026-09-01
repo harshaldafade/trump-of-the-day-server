@@ -1,11 +1,13 @@
 import os
-from supabase import create_client, Client
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import RealDictCursor, execute_values
 from dotenv import load_dotenv
 import datetime
 import time
 
 class Utility:
-    """Utility class for Supabase operations common to both news storage and deletion."""
+    """Utility class for Neon database operations common to both news storage and deletion."""
     
     def __init__(self, table_name):
         # Initialize the database connection
@@ -86,92 +88,145 @@ class Utility:
         return total_count
 
 class DatabaseConnection:
-    """Functions for interacting with Supabase Database"""
+    """Functions for interacting with the Postgres (Neon) database"""
     def __init__(self, table_name):
         # Load environment variables
         load_dotenv()
-        
-        # Supabase credentials
-        self.supabase_url = os.getenv("SUPABASE_URL")
-        self.supabase_key = os.getenv("SUPABASE_KEY")
-        
-        if not self.supabase_url or not self.supabase_key:
-            raise ValueError("⚠️ Supabase credentials are missing. Check your .env file.")
-        
-        # Connect to Supabase
-        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-        
+
+        self.database_url = os.getenv("DATABASE_URL")
+
+        if not self.database_url:
+            raise ValueError("⚠️ DATABASE_URL is missing. Check your .env file.")
+
         # Table Name
         self.table_name = table_name
-    
+
+    def _connect(self):
+        return psycopg2.connect(self.database_url)
+
     def insert_record(self, data):
         """
         Insert a record into the database table.
-        
+
         Args:
             data (dict): The data to insert
-            
+
         Returns:
             dict: The response from the database
-            
+
         Raises:
             Exception: If an error occurs during insertion
         """
         try:
-            response = self.supabase.table(self.table_name).insert(data).execute()
-            return response
+            columns = list(data.keys())
+            query = sql.SQL("INSERT INTO {table} ({fields}) VALUES ({placeholders})").format(
+                table=sql.Identifier(self.table_name),
+                fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
+                placeholders=sql.SQL(", ").join(sql.Placeholder() * len(columns)),
+            )
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, [data[c] for c in columns])
+            return {"inserted": True}
         except Exception as e:
             raise Exception(f"Error inserting data: {e}")
-    
+
+    def insert_records(self, data_list):
+        """
+        Insert many records in a single connection/transaction instead of one
+        connection per row (matters once volumes get into the hundreds/thousands,
+        both for speed and for not hammering Neon with connection churn).
+
+        Args:
+            data_list (list[dict]): Records to insert; all dicts must share the same keys.
+
+        Returns:
+            int: Number of rows inserted
+
+        Raises:
+            Exception: If an error occurs during insertion
+        """
+        if not data_list:
+            return 0
+
+        try:
+            columns = list(data_list[0].keys())
+            values = [[row[c] for c in columns] for row in data_list]
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    query = sql.SQL("INSERT INTO {table} ({fields}) VALUES %s").format(
+                        table=sql.Identifier(self.table_name),
+                        fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
+                    ).as_string(cur)
+                    execute_values(cur, query, values)
+            return len(data_list)
+        except Exception as e:
+            raise Exception(f"Error bulk inserting data: {e}")
+
     def update_record(self, id, data):
         """
         Update a record in the database table.
-        
+
         Args:
             id: The record ID to update
             data (dict): The data to update
-            
+
         Returns:
             dict: The response from the database
-            
+
         Raises:
             Exception: If an error occurs during update
         """
         try:
-            response = self.supabase.table(self.table_name).update(data).eq("id", id).execute()
-            return response
+            columns = list(data.keys())
+            set_clause = sql.SQL(", ").join(
+                sql.SQL("{} = {}").format(sql.Identifier(c), sql.Placeholder()) for c in columns
+            )
+            query = sql.SQL("UPDATE {table} SET {set_clause} WHERE id = %s").format(
+                table=sql.Identifier(self.table_name),
+                set_clause=set_clause,
+            )
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, [data[c] for c in columns] + [id])
+                    rowcount = cur.rowcount
+            return rowcount
         except Exception as e:
             raise Exception(f"Error updating data: {e}")
-    
+
     def delete_record(self, id):
         """
         Delete a record from the database table.
-        
+
         Args:
             id: The record ID to delete
-            
+
         Returns:
             dict: The response from the database
-            
+
         Raises:
             Exception: If an error occurs during deletion
         """
         try:
-            response = self.supabase.table(self.table_name).delete().eq("id", id).execute()
-            return response
+            query = sql.SQL("DELETE FROM {table} WHERE id = %s").format(table=sql.Identifier(self.table_name))
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, [id])
+                    rowcount = cur.rowcount
+            return rowcount
         except Exception as e:
             raise Exception(f"Error deleting data: {e}")
-    
+
     def delete_by_date(self, date):
         """
         Delete records for a specific date.
-        
+
         Args:
             date: The date to delete records for (as a string or date object)
-            
+
         Returns:
             int: Number of records deleted
-            
+
         Raises:
             Exception: If an error occurs during deletion
         """
@@ -179,42 +234,49 @@ class DatabaseConnection:
             # Ensure date is in string format if a date object is passed
             if isinstance(date, datetime.date):
                 date = date.strftime("%Y-%m-%d")
-            
-            response = self.supabase.table(self.table_name).delete().eq("date", date).execute()
-            return len(response.data) if hasattr(response, 'data') else 0
+
+            query = sql.SQL("DELETE FROM {table} WHERE date = %s").format(table=sql.Identifier(self.table_name))
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, [date])
+                    rowcount = cur.rowcount
+            return rowcount
         except Exception as e:
             raise Exception(f"Error deleting data for date {date}: {e}")
-    
+
     def fetch_records(self, limit=100, offset=0):
         """
         Fetch records from the database table with pagination.
-        
+
         Args:
             limit (int): Maximum number of records to fetch
             offset (int): Number of records to skip
-            
+
         Returns:
             list: The fetched records
-            
+
         Raises:
             Exception: If an error occurs during fetching
         """
         try:
-            response = self.supabase.table(self.table_name).select("*").limit(limit).offset(offset).execute()
-            return response.data
+            query = sql.SQL("SELECT * FROM {table} LIMIT %s OFFSET %s").format(table=sql.Identifier(self.table_name))
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, [limit, offset])
+                    return [dict(row) for row in cur.fetchall()]
         except Exception as e:
             raise Exception(f"Error fetching data: {e}")
-    
+
     def fetch_by_date(self, date):
         """
         Fetch records for a specific date.
-        
+
         Args:
             date: The date to fetch records for (as a string or date object)
-            
+
         Returns:
             list: The fetched records
-            
+
         Raises:
             Exception: If an error occurs during fetching
         """
@@ -222,8 +284,98 @@ class DatabaseConnection:
             # Ensure date is in string format if a date object is passed
             if isinstance(date, datetime.date):
                 date = date.strftime("%Y-%m-%d")
-            
-            response = self.supabase.table(self.table_name).select("*").eq("date", date).execute()
-            return response.data
+
+            query = sql.SQL("SELECT * FROM {table} WHERE date = %s").format(table=sql.Identifier(self.table_name))
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, [date])
+                    return [dict(row) for row in cur.fetchall()]
         except Exception as e:
             raise Exception(f"Error fetching data for date {date}: {e}")
+
+    def find_missing_dates(self):
+        """
+        Find every date with zero rows between the table's earliest date and yesterday.
+
+        Returns:
+            list[datetime.date]: Missing dates, ascending
+
+        Raises:
+            Exception: If an error occurs during the query
+        """
+        try:
+            query = sql.SQL("""
+                SELECT gs::date
+                FROM generate_series(
+                    (SELECT min(date) FROM {table}),
+                    CURRENT_DATE - INTERVAL '1 day',
+                    interval '1 day'
+                ) gs
+                LEFT JOIN {table} ON {table}.date = gs::date
+                WHERE {table}.date IS NULL
+                ORDER BY 1
+            """).format(table=sql.Identifier(self.table_name))
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    return [row[0] for row in cur.fetchall()]
+        except Exception as e:
+            raise Exception(f"Error finding missing dates: {e}")
+
+    def find_rows_missing_description(self):
+        """
+        Find rows with no description whose link is at least plausibly fetchable
+        (i.e. not a Google News redirect link, which can't be scraped server-side).
+
+        Returns:
+            list[tuple]: (id, link, image_url) for each candidate row
+
+        Raises:
+            Exception: If an error occurs during the query
+        """
+        try:
+            query = sql.SQL("""
+                SELECT id, link, image_url FROM {table}
+                WHERE (description IS NULL OR description = '')
+                  AND link ~ '^https?://'
+                  AND link NOT LIKE '%%google.com%%'
+                ORDER BY id
+            """).format(table=sql.Identifier(self.table_name))
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    return cur.fetchall()
+        except Exception as e:
+            raise Exception(f"Error finding rows missing a description: {e}")
+
+    def update_descriptions(self, updates):
+        """
+        Bulk-update description (and image_url) for many rows in one connection/transaction.
+
+        Args:
+            updates (list[tuple]): (id, description, image_url) tuples
+
+        Returns:
+            int: Number of rows updated
+
+        Raises:
+            Exception: If an error occurs during the update
+        """
+        if not updates:
+            return 0
+
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        sql.SQL(
+                            "UPDATE {table} SET description = data.description, image_url = data.image_url "
+                            "FROM (VALUES %s) AS data(id, description, image_url) "
+                            "WHERE {table}.id = data.id"
+                        ).format(table=sql.Identifier(self.table_name)).as_string(cur),
+                        updates,
+                    )
+            return len(updates)
+        except Exception as e:
+            raise Exception(f"Error bulk updating descriptions: {e}")
