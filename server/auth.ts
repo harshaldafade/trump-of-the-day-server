@@ -5,7 +5,7 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy, Profile as GoogleProfile, VerifyCallback } from 'passport-google-oauth20';
 import dotenv from 'dotenv';
 import bcrypt from 'bcrypt';
-import { supabase } from './supabaseClient';
+import { pool } from './db';
 
 dotenv.config();
 
@@ -53,28 +53,28 @@ passport.use(
         }
         console.log(`📧 Processing Google login for email: ${email}`);
 
-        // ✅ Upsert user into Supabase directly
-        console.log('🔄 Upserting user in Supabase');
-        const { data, error } = await supabase
-          .from('users')
-          .upsert(
-            {
-              email,
-              // Use the name from _json if available, or fallback to email username
-              name: profile._json.name || email.split('@')[0],
-              // Use picture URL from _json if available
-              profile_picture: profile._json.picture || null,
-            },
-            { onConflict: 'email' }
-          )
-          .select();
+        // ✅ Upsert user into Neon directly
+        console.log('🔄 Upserting user in Neon');
+        const { rows } = await pool.query(
+          `INSERT INTO users (email, name, profile_picture)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, profile_picture = EXCLUDED.profile_picture
+           RETURNING *`,
+          [
+            email,
+            // Use the name from _json if available, or fallback to email username
+            profile._json.name || email.split('@')[0],
+            // Use picture URL from _json if available
+            profile._json.picture || null,
+          ]
+        );
 
-        if (error || !data || !data[0]) {
-          console.error("❌ Supabase user upsert error:", error?.message);
-          return done(error || new Error("User upsert failed"));
+        if (!rows[0]) {
+          console.error("❌ Neon user upsert error: no row returned");
+          return done(new Error("User upsert failed"));
         }
 
-        const user = data[0] as User;
+        const user = rows[0] as User;
         console.log(`✅ User ${user.id} upserted successfully`);
         return done(null, user);
       } catch (err) {
@@ -94,19 +94,10 @@ passport.serializeUser((user: User, done) => {
 passport.deserializeUser(async (id: string, done) => {
   console.log("🔓 Deserializing user with ID:", id);
   try {
-    console.log(`🔍 Looking up user ${id} in Supabase`);
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', id)
-      .limit(1);
+    console.log(`🔍 Looking up user ${id} in Neon`);
+    const { rows: users } = await pool.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [id]);
 
-    if (error) {
-      console.error("❌ Supabase error during user deserialization:", error.message);
-      return done(error, null);
-    }
-    
-    if (!users || users.length === 0) {
+    if (users.length === 0) {
       console.error("⚠️ User not found during deserialization");
       return done(null, null);
     }
@@ -182,18 +173,9 @@ router.post('/login', async (req, res) => {
 
   try {
     console.log(`🔍 Looking up user with email: ${email}`);
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email)
-      .limit(1);
+    const { rows: users } = await pool.query('SELECT * FROM users WHERE email = $1 LIMIT 1', [email]);
 
-    if (error) {
-      console.error('❌ Supabase error during login:', error.message);
-      return res.status(500).json({ error: 'Server error during login' });
-    }
-
-    if (!users || users.length === 0) {
+    if (users.length === 0) {
       console.log(`❌ Login failed: No user found with email ${email}`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -243,28 +225,23 @@ router.post('/signup', async (req, res) => {
     const password_hash = await bcrypt.hash(password, 10);
 
     console.log(`🔄 Creating new user with email: ${email}`);
-    const { data, error } = await supabase
-      .from('users')
-      .insert([{ email, name, password_hash }])
-      .select();
+    const { rows } = await pool.query(
+      'INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *',
+      [email, name, password_hash]
+    );
 
-    if (error) {
-      if (error.message.includes('duplicate key')) {
-        console.log(`❌ Signup failed: Email ${email} already exists`);
-        return res.status(400).json({ error: 'Email already exists' });
-      }
-      console.error('❌ Supabase error during signup:', error.message);
-      return res.status(500).json({ error: 'Signup failed' });
-    }
-
-    if (!data || !data[0]) {
+    if (!rows[0]) {
       console.error('❌ Signup failed: No user returned after insert');
       return res.status(500).json({ error: 'Signup failed (no user returned)' });
     }
 
-    console.log(`🎉 Signup successful for user ${data[0].id}`);
-    return res.status(200).json({ message: 'Signup successful', user: data[0] });
-  } catch (err) {
+    console.log(`🎉 Signup successful for user ${rows[0].id}`);
+    return res.status(200).json({ message: 'Signup successful', user: rows[0] });
+  } catch (err: any) {
+    if (err.code === '23505') { // Postgres unique_violation
+      console.log(`❌ Signup failed: Email ${email} already exists`);
+      return res.status(400).json({ error: 'Email already exists' });
+    }
     console.error('❌ Exception during signup:', err);
     return res.status(500).json({ error: 'Server error during signup' });
   }
@@ -274,17 +251,10 @@ router.post('/signup', async (req, res) => {
 router.get('/users', async (_req, res) => {
   console.log('📣 Fetching all users');
   try {
-    console.log('🔍 Querying users from Supabase');
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('id, email, name, profile_picture');
-    
-    if (error) {
-      console.error('❌ Supabase error fetching users:', error.message);
-      throw error;
-    }
-    
-    console.log(`✅ Successfully fetched ${users?.length || 0} users`);
+    console.log('🔍 Querying users from Neon');
+    const { rows: users } = await pool.query('SELECT id, email, name, profile_picture FROM users');
+
+    console.log(`✅ Successfully fetched ${users.length} users`);
     res.json(users);
   } catch (err) {
     console.error('❌ Exception while fetching users:', err);
