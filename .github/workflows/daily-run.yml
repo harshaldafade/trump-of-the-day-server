@@ -1,3 +1,11 @@
+# Pulls the image built by build-push.yml and runs the daily scrape.
+#
+# NOTE: GitHub auto-disables `schedule` triggers after ~60 days with no
+# repository activity, and re-enabling requires a manual click in the
+# Actions tab (a new push does NOT re-enable it automatically). If this
+# job silently stops running, check
+# https://github.com/harshaldafade/trump-of-the-day-server/actions/workflows/daily-run.yml
+# for a "this scheduled workflow is disabled" banner.
 name: Run Docker image for Daily News Job
 
 on:
@@ -23,11 +31,7 @@ jobs:
         run: docker pull ghcr.io/${{ github.repository }}/daily-news-job:latest
 
       - name: Run Docker container
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           docker run --rm \
-            -e SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
-            -e SUPABASE_KEY=${{ secrets.SUPABASE_KEY }} \
+            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
             ghcr.io/${{ github.repository }}/daily-news-job:latest
