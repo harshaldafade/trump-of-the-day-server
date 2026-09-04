@@ -31,7 +31,4 @@ jobs:
         run: docker pull ghcr.io/${{ github.repository }}/daily-news-job:latest
 
       - name: Run Docker container
-        run: |
-          docker run --rm \
-            -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
-            ghcr.io/${{ github.repository }}/daily-news-job:latest
+        run: docker run --rm -e DATABASE_URL=${{ secrets.DATABASE_URL }} ghcr.io/${{ github.repository }}/daily-news-job:latest
