@@ -3,7 +3,7 @@
 GitHub-specific configuration: issue/PR templates, security policy, and CI workflows.
 
 ## `workflows/build-push.yml`
-**Trigger:** `push` to `main`
+**Trigger:** `push` to `main`, only when `Dockerfile`, `requirements.txt`, `insert_news.py`, `news_scraper.py`, or `lib/**` change (matches the `Dockerfile`'s `COPY` lines exactly — doc/workflow/server/db-only pushes are skipped)
 
 Builds the project's `Dockerfile` and pushes it to GitHub Container Registry as `ghcr.io/<repo>/daily-news-job:latest`. This is the image `daily-run.yml` later pulls and runs — any code change merged to `main` (scraper, `insert_news.py`, `lib/`) only takes effect in production once this workflow rebuilds the image.
 

@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+    # Only rebuild when something that actually ends up in the image changes
+    # (see Dockerfile's COPY lines) -- doc/workflow/server/db-only pushes skip this.
+    paths:
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'insert_news.py'
+      - 'news_scraper.py'
+      - 'lib/**'
 
 jobs:
   build-and-push:
