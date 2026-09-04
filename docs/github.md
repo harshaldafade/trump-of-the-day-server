@@ -25,18 +25,6 @@ The actual production job: pulls the image `build-push.yml` published and runs i
 
 -   **⚠️ Known gotcha (documented in the file itself):** GitHub auto-disables `schedule` triggers after ~60 days of repository inactivity, and a new push does **not** re-enable it — re-enabling requires a manual click on the workflow's page in the Actions tab. If daily news stops updating, check for a "this scheduled workflow is disabled" banner there first.
 
-## `workflows/main.yml`
-**Trigger:** Manual `workflow_dispatch` only — its `schedule` trigger is commented out
-
-Legacy path from before `build-push.yml`/`daily-run.yml` existed: checks out the repo fresh, installs Python 3.12 + system deps (`libopenblas-dev`, needed to compile SciPy/scikit-learn) + `requirements.txt`, then runs `python insert_news.py` directly from source — no Docker image involved. Kept around for manual/ad-hoc runs or as a fallback if the Docker path breaks; not part of the normal daily flow.
-
--   **Job:** `run-script` (`ubuntu-latest`)
-    1. Checkout repo
-    2. Set up Python 3.12
-    3. Install `libopenblas-dev` (apt) for SciPy/scikit-learn
-    4. `pip install -r requirements.txt`
-    5. `python insert_news.py` (with `DATABASE_URL` from secrets)
-
 ## `ISSUE_TEMPLATE/config.yml`
 Issue-chooser configuration. Sets `blank_issues_enabled: false` (forces reporters to pick a template below) and adds one external contact link, "📢 Questions & Discussions", pointing at the repo's GitHub Discussions tab.
 
