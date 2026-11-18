@@ -63,7 +63,7 @@ The main entry point. Calls `fetch_gdelt_news` then `fetch_google_news`, dedupli
 Module-level helper shared by `NewsStorage` and `MissingDaysBackfiller`: converts `fetch_news_by_date`'s article dicts into rows shaped for `DatabaseConnection.insert_records` (adds a shared `created_at` timestamp and a `relevance_score` from `lib.relevance.score_article`).
 
 #### `enrich_day(db, day)`
-Post-insert steps for one date, run by `NewsStorage`, `MissingDaysBackfiller` and the `enrich` subcommand: (1) embed rows with no embedding yet via `lib.embeddings` (skipped without `VOYAGE_API_KEY`), (2) generate and upsert the daily digest from the day's top-ranked 40 stories via `lib.digest` (skipped without `ANTHROPIC_API_KEY`), (3) `NOTIFY news_updated` so running API instances drop their cache for that date and push a WebSocket update. Steps 1 and 2 log and continue on failure; the NOTIFY always runs. Accepts a `date` or an aware `datetime`.
+Post-insert steps for one date, run by `NewsStorage`, `MissingDaysBackfiller` and the `enrich` subcommand: (1) embed rows with no embedding yet via `lib.embeddings` (skipped without `VOYAGE_API_KEY`), (2) generate and upsert the daily digest, with per-sentence citations, from the day's top-ranked 40 stories via `lib.digest` (skipped when no provider key is set: `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`), (3) `NOTIFY news_updated` so running API instances drop their cache for that date and push a WebSocket update. Steps 1 and 2 log and continue on failure; the NOTIFY always runs. Accepts a `date` or an aware `datetime`.
 
 #### `rescore(db, start_date=None, end_date=None)` / `backfill_embeddings(db, batch=1000)`
 One-off maintenance helpers behind the `rescore` and `backfill-embeddings` subcommands (see the main README).

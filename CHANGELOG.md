@@ -26,6 +26,7 @@ All notable changes to the news pipeline. The format follows [Keep a Changelog](
 - `requirements.txt` lists only direct dependencies (was a 59-package freeze including the ranking experiment's ML stack); the Docker image no longer installs compiler/BLAS packages and runs as a non-root user.
 - `db/schema.sql` reflects the current schema; `news_readonly` gets `SELECT` on `daily_digest` too.
 - The README states that this repository is a daily batch pipeline, not a server (the Express `server/` is gone; the site's API lives in the main repository's `api/`), and lists what lives here versus there. The repository will be renamed; links still use `trump-of-the-day-server` until then.
+- README and docs: citations and the three-attempt retry; `today`/`yesterday` are UTC; a "Before the first production run" checklist (migration 002, backfills, secrets); how to test against the main repo's local Docker database without touching production.
 
 ### Fixed
 - `NewsStorage.save_news_by_date` crashed with `AttributeError` when recording a degraded day, because `process_date_range` passes `date` objects (which have no `.date()`).

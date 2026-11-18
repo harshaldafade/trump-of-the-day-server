@@ -55,6 +55,24 @@ VOYAGE_API_KEY=
 $ python -m pytest
 ```
 
+### Before the first production run
+
+Production needs the current schema and the GitHub secrets:
+
+1. Run `db/migrations/002_dedupe_vector_digest.sql` on Neon with the owner connection string (take a Neon branch first; it deletes duplicate links). Then `python insert_news.py rescore`, `backfill-embeddings` (with a Voyage key) and `enrich <start> <end>` to fill existing rows. See [docs/db.md](docs/db.md).
+2. In this repo's Settings → Secrets and variables → Actions, set `DATABASE_URL`, and `OPENROUTER_API_KEY` for the brief (optionally `VOYAGE_API_KEY`). See [docs/github.md](docs/github.md).
+
+### Testing locally against a throwaway database
+
+The main repository's `docker compose up -d` starts Postgres with pgvector on `127.0.0.1:5432`, seeded with synthetic stories. Run the pipeline against it by setting `DATABASE_URL` on the command line. A variable already in the environment wins over `.env`, so this can't touch production even if `.env` holds the Neon URL:
+
+```bash
+$ DATABASE_URL=postgres://owner:owner@127.0.0.1:5432/news python insert_news.py yesterday today
+$ DATABASE_URL=postgres://owner:owner@127.0.0.1:5432/news python insert_news.py enrich 2026-11-13 2026-11-13
+```
+
+With the main repo's site running (`npm run dev`), open pages update as soon as a day is processed.
+
 ## News Scraper
 `news_scraper.py` pulls Trump-related news from two independent sources and merges/deduplicates the results:
 
@@ -69,10 +87,10 @@ There's no headless browser or Selenium/Chrome dependency — everything is plai
 Each article is scored by `lib/relevance.py` before insert (rows whose `link` is already stored are skipped). Then, for every processed date, `enrich_day` in `insert_news.py`:
 
 1.  embeds new rows with Voyage (`voyage-3.5`, if `VOYAGE_API_KEY` is set) for semantic search and "related coverage";
-2.  asks an LLM for a short neutral summary of the day's top 40 stories and its top five story ids, stored in `daily_digest`. By default this goes to OpenRouter's [Free Router](https://openrouter.ai/docs/guides/routing/routers/free-router) (`openrouter/free`, needs `OPENROUTER_API_KEY`), which picks an available free model; the model that actually wrote the brief is stored and shown on the site; with `DIGEST_PROVIDER=anthropic` it uses Claude (`ANTHROPIC_API_KEY`);
+2.  asks an LLM for a short neutral summary of the day's top 40 stories and its top five story ids, stored in `daily_digest`. The summary comes back sentence by sentence, each sentence with the ids of the one to three stories it's based on (`daily_digest.paragraphs`); the site shows these as numbered links to the stories. By default this goes to OpenRouter's [Free Router](https://openrouter.ai/docs/guides/routing/routers/free-router) (`openrouter/free`, needs `OPENROUTER_API_KEY`), which picks an available free model; the model that actually wrote the brief is stored and shown on the site. Reasoning is capped and the call is tried up to three times, since some free models think until they run out of tokens. With `DIGEST_PROVIDER=anthropic` it uses Claude (`ANTHROPIC_API_KEY`);
 3.  sends `NOTIFY news_updated, '<date>'`, which makes every running API instance drop its cached copy of that date and push a WebSocket message to open browsers.
 
-A failure in step 1 or 2 is logged and doesn't stop the others.
+A failure in step 1 or 2 is logged and doesn't stop the others. Because the daily job processes yesterday and today, a day whose brief failed gets a second attempt on the next run.
 
 ## Run insert script
 The `insert_news` script fetches and stores news articles in the Neon
@@ -90,8 +108,8 @@ python insert_news.py [start_date] [end_date]
 
 -   `start_date` (optional):
     -   Accepts `YYYY-MM-DD` format.\
-    -   You can also pass `today`/`t` or `yesterday`/`y`.\
-    -   If not provided, defaults to today.
+    -   You can also pass `today`/`t` or `yesterday`/`y`. These are UTC dates, the same day boundary the site uses, whatever your machine's timezone.\
+    -   If not provided, defaults to today (UTC).
 -   `end_date` (optional):
     -   Accepts `YYYY-MM-DD` format, or `today`/`t`.\
     -   If not provided, the utility will only fetch news for the
