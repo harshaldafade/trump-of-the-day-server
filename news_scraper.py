@@ -58,6 +58,32 @@ def _normalize_title(title):
     return re.sub(r"\s+", " ", title).strip().lower()
 
 
+# GDELT's sourcelang:english tag and Google's hl=en-US are both best-effort, not a
+# strict filter -- non-English articles still get through. A real English headline
+# essentially never contains characters from these scripts, so this is a cheap,
+# reliable backstop.
+_NON_LATIN_SCRIPT_RE = re.compile(
+    "["
+    "֐-׿"  # Hebrew
+    "؀-ۿݐ-ݿ"  # Arabic
+    "Ѐ-ӿ"  # Cyrillic
+    "ऀ-ॿ"  # Devanagari
+    "฀-๿"  # Thai
+    "一-鿿぀-ヿ"  # CJK, Hiragana/Katakana
+    "가-힯"  # Hangul
+    "]"
+)
+
+def _is_english_script(title):
+    # NB: don't also require "trump" literally in the title as a relevance filter --
+    # ~10% of genuinely relevant administration/White House news (e.g. "Zelenskyy
+    # leaves White House without signing minerals deal", "Interior Department
+    # Advances Restoration of Historic Names") doesn't name him in the headline.
+    # Checked against the live DB before adding that check; reverted after it would
+    # have deleted 750 legitimate rows to catch one bad obituary match.
+    return not _NON_LATIN_SCRIPT_RE.search(title)
+
+
 def is_google_link(link):
     """news.google.com redirect links can't be fetched server-side (they 400/land on a
     generic Google page instead of the article), so scraping OG tags off them just
@@ -74,7 +100,11 @@ def fetch_meta(url, session):
         r = session.get(url, timeout=6)
         if r.status_code != 200:
             return result
-        soup = BeautifulSoup(r.text, "html.parser")
+        # Parse raw bytes, not r.text: many sites omit charset from the Content-Type
+        # header, which makes `requests` default r.encoding to ISO-8859-1 per the old
+        # HTTP spec even when the page is actually UTF-8 -- mangling curly quotes etc.
+        # BeautifulSoup's own encoding detection (meta charset/BOM-aware) gets this right.
+        soup = BeautifulSoup(r.content, "html.parser")
 
         for tag in ["og:image", "twitter:image"]:
             meta = soup.find("meta", property=tag)
@@ -123,6 +153,25 @@ def fetch_meta(url, session):
     return result
 
 
+def is_image_reachable(image_url, referer, session):
+    """Confirm an image URL actually resolves to a real image, not a dead link.
+    Thumbnails (especially GDELT's, and older backfilled ones) do rot over time.
+    Referer is set to the article page since some CDNs hotlink-block bare requests."""
+    headers = {"Referer": referer} if referer else {}
+    try:
+        r = session.head(image_url, timeout=5, allow_redirects=True, headers=headers)
+        if r.status_code == 200 and r.headers.get("Content-Type", "").startswith("image/"):
+            return True
+        if r.status_code in (405, 403):  # some servers reject HEAD; fall back to a light GET
+            r = session.get(image_url, timeout=5, stream=True, headers=headers)
+            ok = r.status_code == 200 and r.headers.get("Content-Type", "").startswith("image/")
+            r.close()
+            return ok
+        return False
+    except requests.RequestException:
+        return False
+
+
 def fetch_google_news(target_date, session):
     start = target_date.strftime("%Y-%m-%d")
     end = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -162,12 +211,15 @@ def fetch_google_news(target_date, session):
     return articles
 
 
+# If GDELT is transiently throttling us harder than the per-request Retry adapter's
+# ~22s budget can ride out, a daily cron job has plenty of slack to just wait it out
+# rather than silently degrading to Google-RSS-only (no images/descriptions) for the day.
+GDELT_COOLDOWN_ATTEMPTS = 2
+GDELT_COOLDOWN_SECONDS = 75
+
+
 def fetch_gdelt_news(target_date, session):
     global _last_gdelt_request_at
-
-    elapsed = time.monotonic() - _last_gdelt_request_at
-    if elapsed < GDELT_MIN_INTERVAL:
-        time.sleep(GDELT_MIN_INTERVAL - elapsed)
 
     start = target_date.strftime("%Y%m%d") + "000000"
     end = target_date.strftime("%Y%m%d") + "235959"
@@ -183,13 +235,28 @@ def fetch_gdelt_news(target_date, session):
     }
     print("🔍 GDELT search:", start, "-", end)
 
-    try:
-        _last_gdelt_request_at = time.monotonic()
-        resp = session.get(GDELT_API_URL, params=params, timeout=8)
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError) as e:
-        print(f"⚠️ GDELT request failed: {e}")
+    data = None
+    last_error = None
+    for attempt in range(1 + GDELT_COOLDOWN_ATTEMPTS):
+        elapsed = time.monotonic() - _last_gdelt_request_at
+        if elapsed < GDELT_MIN_INTERVAL:
+            time.sleep(GDELT_MIN_INTERVAL - elapsed)
+
+        try:
+            _last_gdelt_request_at = time.monotonic()
+            resp = session.get(GDELT_API_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except (requests.RequestException, ValueError) as e:
+            last_error = e
+            if attempt < GDELT_COOLDOWN_ATTEMPTS:
+                print(f"⚠️ GDELT request failed ({e}); cooling down {GDELT_COOLDOWN_SECONDS}s before retry "
+                      f"{attempt + 2}/{1 + GDELT_COOLDOWN_ATTEMPTS}")
+                time.sleep(GDELT_COOLDOWN_SECONDS)
+
+    if data is None:
+        print(f"⚠️ GDELT request failed after {1 + GDELT_COOLDOWN_ATTEMPTS} attempts: {last_error}")
         return []
 
     articles = []
@@ -227,6 +294,8 @@ def fetch_news_by_date(target_date, daily_cap=None):
             norm_title = _normalize_title(article["title"])
             if not norm_title or link in seen_links or norm_title in seen_titles:
                 continue
+            if not _is_english_script(article["title"]):
+                continue
             seen_links.add(link)
             seen_titles.add(norm_title)
             news_list.append(article)
@@ -250,6 +319,17 @@ def fetch_news_by_date(target_date, daily_cap=None):
                 if not article["image_url"]:
                     article["image_url"] = meta["image"]
                 article["description"] = meta["description"]
+
+    # Verify every image_url actually resolves before it reaches the DB; clear it
+    # (rather than dropping the article) if it's dead, so the feed never shows a
+    # broken thumbnail.
+    has_image = [a for a in news_list if a["image_url"]]
+    if has_image:
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            alive = pool.map(lambda a: is_image_reachable(a["image_url"], a["link"], session), has_image)
+            for article, ok in zip(has_image, alive):
+                if not ok:
+                    article["image_url"] = ""
 
     return news_list
 

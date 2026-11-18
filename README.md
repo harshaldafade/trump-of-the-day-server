@@ -1,34 +1,58 @@
-# Server for trumpoftheday.com
- Backend, scraper, ranking algorithm
+# News pipeline for trumpoftheday.com
+ Scraper, relevance ranking, daily AI digest (free via OpenRouter, or Claude), and embeddings. Used as a git submodule of [divij-pawar/trump-of-the-day](https://github.com/divij-pawar/trump-of-the-day), whose `api/` serves this data to the site.
+
+> **This repository is a data pipeline, not a server.** Despite the `-server` in its name, nothing here listens for requests. It is a batch job: once a day GitHub Actions runs it, it writes stories, a digest and embeddings to Postgres, and exits. The web server that the site talks to is the Fastify API in [`api/`](https://github.com/divij-pawar/trump-of-the-day/tree/main/api) of the main repository. The repository is due to be renamed to reflect this; until then, links and badges still use `trump-of-the-day-server`.
+
+| Lives here (pipeline) | Lives in the main repo |
+|---|---|
+| Scraping, dedupe, relevance scoring | React website (`src/`) |
+| Daily digest and embeddings | Fastify API that serves the data (`api/`) |
+| Database schema and migrations (`db/`) | Terraform for GCP and AWS (`infra/`) |
+| Daily GitHub Actions job and its Docker image | Website and API deploys |
  
 ![Docker Image Build](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/build-push.yml?label=Docker%20Image%20Build)
+![Tests](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/test.yml?label=Tests)
 ![Daily News Update](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/daily-run.yml?label=Daily%20News%20Update)
 
 ## Documentation
 
 Deeper reference docs live in [`docs/`](docs/):
 
--   [docs/scripts.md](docs/scripts.md) — every function/class in `news_scraper.py`, `insert_news.py`, `delete_news.py`, `sort-news.py`, `deepseek-test.py`, and what the `Dockerfile` does
--   [docs/lib.md](docs/lib.md) — every function in `lib/utils.py` (the Neon database access layer), with usage examples
--   [docs/db.md](docs/db.md) — the Neon schema (`db/schema.sql`) and the read-only-role gotcha documented in it
--   [docs/server.md](docs/server.md) — the Express/Passport auth backend in `server/`
+-   [docs/scripts.md](docs/scripts.md) — every function/class in `news_scraper.py`, `insert_news.py`, `delete_news.py`, and what the `Dockerfile` does
+-   [docs/lib.md](docs/lib.md) — `lib/utils.py` (the Neon database access layer), `lib/relevance.py`, `lib/digest.py` and `lib/embeddings.py`
+-   [docs/db.md](docs/db.md) — the Neon schema (`db/schema.sql`), migrations, and the read-only-role gotcha
+-   [CHANGELOG.md](CHANGELOG.md) — what changed, release by release
 -   [docs/github.md](docs/github.md) — what each CI workflow, issue template, and policy file in `.github/` does
 
-## Install Scraper and Ranking algorithm
+## Install
 1. Create and activate virtual environment
 ```bash
 $ python -m venv env
 $ source env/bin/activate
-`` 
+```
 2. Install dependencies
 ```bash
-$ pip install -r requirements.txt
+$ pip install -r requirements-dev.txt   # requirements.txt + pytest
 ```
 
-3. Create an .env file for the Neon database connection
+3. Create an .env file
 ```
-# Neon Postgres connection details
+# Neon Postgres connection (owner role: the pipeline writes)
 DATABASE_URL=<your neon connection string>
+# Optional: daily digest (skipped if neither key is set; OpenRouter wins if both are)
+OPENROUTER_API_KEY=          # free, via OpenRouter's Free Router (openrouter/free)
+# OPENROUTER_MODELS=a/b:free,c/d:free   # pin specific free models instead of the router
+ANTHROPIC_API_KEY=           # Claude; or force it with DIGEST_PROVIDER=anthropic
+# ANTHROPIC_MODEL=claude-haiku-5-5      # ~$0.05/month instead of Opus
+# Optional: embeddings for search / related coverage (skipped if unset)
+VOYAGE_API_KEY=
+```
+
+4. Apply the schema: `db/schema.sql` for a new database, or the files in `db/migrations/` for an existing one (see [docs/db.md](docs/db.md)).
+
+5. Run the tests
+```bash
+$ python -m pytest
 ```
 
 ## News Scraper
@@ -41,37 +65,15 @@ For each article missing a description, the scraper visits the real article page
 
 There's no headless browser or Selenium/Chrome dependency — everything is plain HTTP.
 
-## Install and Start Server
-The server is created using express js and uses the same Neon Postgres database as the news scraper (see `db/schema.sql`'s `users` table). In recent future, we plan to move hosting to an [EC2 Instance](https://aws.amazon.com/ec2/).
+## What happens after a day is inserted
+Each article is scored by `lib/relevance.py` before insert (rows whose `link` is already stored are skipped). Then, for every processed date, `enrich_day` in `insert_news.py`:
 
-Install server
-```bash
-$ cd server
-$ npm install
-$ touch .env
-```
-Create env with following variables in server
-```
-DATABASE_URL=<your neon connection string>
+1.  embeds new rows with Voyage (`voyage-3.5`, if `VOYAGE_API_KEY` is set) for semantic search and "related coverage";
+2.  asks an LLM for a short neutral summary of the day's top 40 stories and its top five story ids, stored in `daily_digest`. By default this goes to OpenRouter's [Free Router](https://openrouter.ai/docs/guides/routing/routers/free-router) (`openrouter/free`, needs `OPENROUTER_API_KEY`), which picks an available free model; the model that actually wrote the brief is stored and shown on the site; with `DIGEST_PROVIDER=anthropic` it uses Claude (`ANTHROPIC_API_KEY`);
+3.  sends `NOTIFY news_updated, '<date>'`, which makes every running API instance drop its cached copy of that date and push a WebSocket message to open browsers.
 
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
+A failure in step 1 or 2 is logged and doesn't stop the others.
 
-
-
-GOOGLE_CALLBACK_URL=http://localhost:3001/api/auth/google/callback
-CLIENT_URL=http://localhost:3000
-
-PORT=3001
-
-SECRET=
-NODE_ENV=development  # for local development or 'production' for deploying
-
-```
-Run server
-```bash
-$ npx ts-node server.ts
-```
 ## Run insert script
 The `insert_news` script fetches and stores news articles in the Neon
 database for a given date range.
@@ -88,13 +90,14 @@ python insert_news.py [start_date] [end_date]
 
 -   `start_date` (optional):
     -   Accepts `YYYY-MM-DD` format.\
-    -   You can also pass `today` or `t` to fetch news for the current
-        date.\
-    -   If not provided, the utility will use its default logic.
+    -   You can also pass `today`/`t` or `yesterday`/`y`.\
+    -   If not provided, defaults to today.
 -   `end_date` (optional):
-    -   Accepts `YYYY-MM-DD` format.\
+    -   Accepts `YYYY-MM-DD` format, or `today`/`t`.\
     -   If not provided, the utility will only fetch news for the
         `start_date`.
+
+The Docker image (and so the daily GitHub Actions run) uses `yesterday today`: re-scraping yesterday picks up stories published after the previous day's run, and duplicates are skipped.
 
 #### Examples
 
@@ -136,7 +139,7 @@ If there is an insertion error, you will see:
 
 ### Maintenance subcommands
 
-`insert_news.py` also supports two maintenance operations, each backed by its own class in the same file:
+`insert_news.py` also supports these maintenance operations:
 
 -   **`backfill-missing`** — finds every date with zero rows between the table's earliest date and yesterday, scrapes all of them (capped at 15 articles/day to match the site's historical density), and inserts everything in a single bulk request rather than one insert per day.
 
@@ -150,7 +153,17 @@ If there is an insertion error, you will see:
     python insert_news.py repair-descriptions
     ```
 
-Both are safe to re-run at any time — they only ever act on rows that still need it.
+-   **`enrich [start] [end]`** — re-runs embeddings, the daily digest and the `NOTIFY` for a date or range without scraping (e.g. to regenerate digests after changing the prompt).
+
+    ``` bash
+    python insert_news.py enrich 2025-09-01 2025-09-05
+    ```
+
+-   **`backfill-embeddings`** — embeds every row that has no embedding yet, 1,000 at a time. Run once after migration 002.
+
+-   **`rescore [start] [end]`** — recomputes `relevance_score` for existing rows (all rows if no range). Run once after migration 002, and after changing `lib/relevance.py`.
+
+All of them are safe to re-run at any time — they only ever act on rows that still need it (or overwrite with the same result).
 
 ## Run delete script
 The `delete_news` script deletes news articles from the Neon database
@@ -225,11 +238,3 @@ If there is a deletion error, you will see:
 
     ❌ Error deleting data for 2025-09-03: <error_message>
 
-## Features running on server
-<ul>
-<li>User authorization
-<li>News Scraping
-<li>Ranking Algorithm
-<li>AI Summarize news
-<li>Upvotes/Downvotes/Comments
-</ul>

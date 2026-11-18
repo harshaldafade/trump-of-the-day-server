@@ -3,17 +3,18 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy only requirements and install
+# Copy only requirements and install. Everything left in requirements.txt ships
+# wheels, so no compiler or BLAS packages are needed.
 COPY requirements.txt .
-RUN apt-get update && \
-    apt-get install -y libopenblas-dev build-essential && \
-    pip install --upgrade pip && \
-    pip install -r requirements.txt && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy only the Python script
+# Copy only the pipeline code
 COPY insert_news.py news_scraper.py ./
-COPY lib/ ./lib/ 
+COPY lib/ ./lib/
 
-# Default command
-CMD ["python", "insert_news.py"]
+RUN useradd --create-home pipeline
+USER pipeline
+
+# Default command: re-scrape yesterday (to pick up stories published after the
+# previous run) and scrape today. Duplicate links are skipped on insert.
+CMD ["python", "insert_news.py", "yesterday", "today"]

@@ -1,6 +1,9 @@
+import datetime as dt
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
+from lib import digest, embeddings
+from lib.relevance import score_article
 from lib.utils import Utility, DatabaseConnection
 from news_scraper import fetch_news_by_date, fetch_meta, build_session, is_google_link
 
@@ -16,7 +19,53 @@ def _build_records(articles):
         "link": article["link"],
         "news_source": article["news_source"],
         "image_url": article["image_url"],
+        "relevance_score": score_article(article),
     } for article in articles]
+
+
+def _as_date(value):
+    """process_date_range passes datetime.date; the backfiller passes aware datetimes."""
+    return value.date() if isinstance(value, datetime) else value
+
+
+def enrich_day(db, day):
+    """Post-insert steps for one date, each skipped if its API key isn't set:
+
+    1. embed rows that don't have an embedding yet (Voyage)
+    2. (re)write the daily digest from the day's top-ranked stories (Claude)
+    3. NOTIFY running API instances so they drop their cache and push to browsers
+
+    A failure in 1 or 2 is logged and doesn't stop the others -- the raw feed is
+    still useful without a digest.
+    """
+    day = _as_date(day)
+
+    if embeddings.is_configured():
+        try:
+            rows = db.find_rows_missing_embedding(date=day)
+            if rows:
+                vectors = embeddings.embed_documents([embeddings.document_text(r) for r in rows])
+                db.update_embeddings([
+                    (r["id"], embeddings.to_vector_literal(v)) for r, v in zip(rows, vectors)
+                ])
+                print(f"🧭 Embedded {len(rows)} article(s) for {day}")
+        except Exception as e:
+            print(f"⚠️ Embedding failed for {day}: {e}")
+
+    if digest.is_configured():
+        try:
+            stories = db.fetch_ranked_by_date(day, limit=digest.MAX_STORIES)
+            if stories:
+                result = digest.generate_digest(day.isoformat(), stories)
+                db.upsert_digest(day, result)
+                print(f"📝 Digest written for {day} ({len(result['top_story_ids'])} top stories)")
+        except Exception as e:
+            print(f"⚠️ Digest failed for {day}: {e}")
+
+    try:
+        db.notify_news_updated(day)
+    except Exception as e:
+        print(f"⚠️ NOTIFY failed for {day}: {e}")
 
 
 class NewsStorage:
@@ -25,6 +74,10 @@ class NewsStorage:
     def __init__(self):
         self.utils = Utility(table_name="news")
         self.db = self.utils.db
+        # Dates where GDELT (the only source with real images/descriptions) contributed
+        # nothing, so the day's feed silently degraded to Google-RSS-only. Checked by
+        # __main__ to fail the run loudly instead of reporting success on a degraded day.
+        self.degraded_days = []
 
     def save_news_by_date(self, target_date):
         """
@@ -39,15 +92,25 @@ class NewsStorage:
         news = fetch_news_by_date(target_date)
         if not news:
             print(f"⚠️ No news fetched for {target_date}.")
+            self.degraded_days.append(_as_date(target_date))
             return 0
+
+        if all(is_google_link(a["link"]) for a in news):
+            print(f"⚠️ GDELT contributed zero articles for {_as_date(target_date)} "
+                  f"-- feed for this day has no images/descriptions")
+            self.degraded_days.append(_as_date(target_date))
 
         try:
             # Insert the whole day's articles in one connection/transaction instead
-            # of one connection per row.
-            return self.db.insert_records(_build_records(news))
+            # of one connection per row. Links already stored are skipped.
+            inserted = self.db.insert_records(_build_records(news))
         except Exception as e:
             print(f"❌ Error inserting data for {target_date}: {e}")
             return 0
+
+        print(f"💾 {inserted} new of {len(news)} scraped for {_as_date(target_date)}")
+        enrich_day(self.db, target_date)
+        return inserted
 
     def run(self, start_date_str=None, end_date_str=None):
         """
@@ -121,6 +184,8 @@ class MissingDaysBackfiller:
         print(f"📥 Inserting {len(records)} articles across {len(missing_days)} day(s) in one request...")
         count = self.db.insert_records(records)
         print(f"✅ Inserted {count} rows.")
+        for day in missing_days:
+            enrich_day(self.db, day)
         return count
 
 
@@ -167,6 +232,33 @@ class DescriptionRepairer:
         return count
 
 
+def rescore(db, start_date=None, end_date=None):
+    """Recompute relevance_score for existing rows (all rows if no range given)."""
+    rows = db.fetch_for_scoring(start_date, end_date)
+    count = db.update_relevance([(r["id"], score_article(r)) for r in rows])
+    print(f"✅ Rescored {count} rows.")
+    return count
+
+
+def backfill_embeddings(db, batch=1000):
+    """Embed every row that has no embedding, `batch` rows per round trip."""
+    if not embeddings.is_configured():
+        print("❌ VOYAGE_API_KEY is not set.")
+        return 0
+    total = 0
+    while True:
+        rows = db.find_rows_missing_embedding(limit=batch)
+        if not rows:
+            break
+        vectors = embeddings.embed_documents([embeddings.document_text(r) for r in rows])
+        total += db.update_embeddings([
+            (r["id"], embeddings.to_vector_literal(v)) for r, v in zip(rows, vectors)
+        ])
+        print(f"  ...{total} embedded")
+    print(f"✅ Embedded {total} rows.")
+    return total
+
+
 if __name__ == "__main__":
     import sys
 
@@ -176,7 +268,23 @@ if __name__ == "__main__":
         MissingDaysBackfiller(DatabaseConnection(table_name="news")).run()
     elif args and args[0] == "repair-descriptions":
         DescriptionRepairer(DatabaseConnection(table_name="news")).run()
+    elif args and args[0] == "rescore":
+        rescore(DatabaseConnection(table_name="news"), *args[1:3])
+    elif args and args[0] == "backfill-embeddings":
+        backfill_embeddings(DatabaseConnection(table_name="news"))
+    elif args and args[0] == "enrich":
+        # Re-run embeddings + digest + NOTIFY for a date or range without scraping.
+        utils = Utility(table_name="news")
+        start, end = utils.get_date_range(*(args[1:3] or [None]))
+        if not start:
+            sys.exit(2)
+        for n in range((end - start).days + 1):
+            enrich_day(utils.db, start + dt.timedelta(days=n))
     else:
         start_date_arg = args[0] if len(args) > 0 else None
         end_date_arg = args[1] if len(args) > 1 else None
-        NewsStorage().run(start_date_arg, end_date_arg)
+        storage = NewsStorage()
+        storage.run(start_date_arg, end_date_arg)
+        if storage.degraded_days:
+            print(f"❌ GDELT failed for {len(storage.degraded_days)} day(s): {storage.degraded_days}")
+            sys.exit(1)

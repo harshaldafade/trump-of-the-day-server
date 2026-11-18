@@ -54,7 +54,7 @@ class NewsDeletion:
                 print(f"⚠️ You are about to delete all news articles from {start_date} to {end_date}")
                 confirmation = input("Are you sure you want to proceed? (yes/no): ").lower()
                 
-                if confirmation != 'yes':
+                if confirmation not in ['yes' , 'y']:
                     print("Operation cancelled.")
                     return 0
             

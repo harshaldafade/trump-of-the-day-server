@@ -30,7 +30,24 @@ jobs:
       - name: Pull latest Docker image
         run: docker pull ghcr.io/${{ github.repository }}/daily-news-job:latest
 
+      # The enrichment keys are optional: if a secret isn't set, that step is
+      # skipped and the raw feed is still inserted.
+      #   OPENROUTER_API_KEY  daily digest via OpenRouter's free router (preferred when set)
+      #   ANTHROPIC_API_KEY   daily digest with Claude (DIGEST_PROVIDER=anthropic)
+      #   VOYAGE_API_KEY      embeddings for search / related coverage
+      # OPENROUTER_MODELS / DIGEST_PROVIDER / ANTHROPIC_MODEL are optional
+      # repository variables (Settings > Variables) to override the defaults.
       - name: Run Docker container
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: docker run --rm -e DATABASE_URL="$DATABASE_URL" "ghcr.io/${{ github.repository }}/daily-news-job:latest"
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
+          DIGEST_PROVIDER: ${{ vars.DIGEST_PROVIDER }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+        run: >-
+          docker run --rm
+          -e DATABASE_URL -e OPENROUTER_API_KEY -e ANTHROPIC_API_KEY -e VOYAGE_API_KEY
+          -e OPENROUTER_MODELS -e DIGEST_PROVIDER -e ANTHROPIC_MODEL
+          "ghcr.io/${{ github.repository }}/daily-news-job:latest"

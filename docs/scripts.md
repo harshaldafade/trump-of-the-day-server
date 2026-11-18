@@ -1,6 +1,6 @@
 # Root scripts
 
-Function/class-level reference for every Python script in the repo root. For day-to-day CLI usage of `insert_news.py`/`delete_news.py`, see the main [README.md](../README.md) — this page is the API-level companion to that, plus coverage for `news_scraper.py`, `sort-news.py`, and `deepseek-test.py`, which the main README doesn't detail.
+Function/class-level reference for every Python script in the repo root. For day-to-day CLI usage of `insert_news.py`/`delete_news.py`, see the main [README.md](../README.md) — this page is the API-level companion to that, plus coverage for `news_scraper.py`, which the main README doesn't detail.
 
 ---
 
@@ -19,10 +19,18 @@ Returns `True` if `link`'s host ends in `google.com`. Google News RSS `<link>` v
 
 -   **Usage:** `if not is_google_link(article["link"]): ...`
 
+#### `_is_english_script(title)`
+Returns `False` if `title` contains characters from a non-Latin script (Hebrew, Arabic, Cyrillic, Devanagari, Thai, CJK, Hangul). Backstop against GDELT's `sourcelang:english` and Google's `hl=en-US` both being best-effort, not a strict filter — real non-English articles do slip through occasionally. Deliberately does *not* also require "trump" literally in the title as a relevance filter (checked against the live DB: that would have dropped ~750 legitimate rows — e.g. headlines about the administration that don't name him directly — to catch one bad match).
+
 #### `fetch_meta(url, session)`
-Visits a real article page and scrapes `og:image`/`twitter:image` and `og:description`/`twitter:description`/`meta[name=description]`, falling back to JSON-LD (`<script type="application/ld+json">`) for whichever field is still missing.
+Visits a real article page and scrapes `og:image`/`twitter:image` and `og:description`/`twitter:description`/`meta[name=description]`, falling back to JSON-LD (`<script type="application/ld+json">`) for whichever field is still missing. Parses `r.content` (raw bytes), not `r.text` — `requests` defaults to `ISO-8859-1` per the old HTTP spec when a page's `Content-Type` header omits a charset, which mangles UTF-8 curly quotes etc. even though the page is actually UTF-8; BeautifulSoup's own encoding detection (meta charset/BOM-aware) gets this right.
 
 -   **Returns:** `{"image": str, "description": str}` (empty strings on any failure — never raises)
+
+#### `is_image_reachable(image_url, referer, session)`
+Confirms an `image_url` actually resolves (`HEAD`, falling back to a streamed `GET` if the server rejects `HEAD` with `405`/`403`) and that the response is really an image (`Content-Type` starts with `image/`). Sends `Referer: {referer}` (the article's own link) since some CDNs hotlink-block bare requests. Used to clear (not drop) dead thumbnails — GDELT's `socialimage` and older backfilled links do rot over time.
+
+-   **Returns:** `bool` (`False` on any request exception — never raises)
 
 #### `fetch_google_news(target_date, session)`
 Queries `news.google.com/rss/search` for `Donald Trump after:{date} before:{date+1}` and parses the RSS feed with `feedparser`. Splits each entry's title on `" - "` to separate headline from source name. Description/image are always empty here (Google's RSS `<summary>` is just the title+source repeated as HTML, and the link can't be resolved server-side — see `is_google_link`); `fetch_news_by_date` fills these in later where possible.
@@ -32,10 +40,12 @@ Queries `news.google.com/rss/search` for `Donald Trump after:{date} before:{date
 #### `fetch_gdelt_news(target_date, session)`
 Queries the GDELT DOC 2.0 API (`mode=artlist`, `sourcelang:english`, `maxrecords=250`) for the given day. Enforces `GDELT_MIN_INTERVAL` (6s) between calls via a module-level timestamp, since GDELT's HTTPS endpoint silently stalls the TLS handshake (rather than returning a clean `429`) if you exceed its documented 1-request-per-5-seconds limit. Uses `http://` not `https://` — GDELT's HTTPS endpoint was found to be unreliable independent of rate limiting; plain HTTP is fine since this is a public, read-only, non-sensitive query.
 
+If the request still fails after `build_session()`'s own retry budget (~22s), GDELT has been observed to rate-limit/throttle harder than that can ride out — a daily cron has hours of slack, so it waits `GDELT_COOLDOWN_SECONDS` (75s) and retries the whole call, up to `GDELT_COOLDOWN_ATTEMPTS` (2) extra times, before finally giving up and returning `[]` for the day.
+
 -   **Returns:** `list[dict]` — each with `title`, `link` (real article URL), `description` (`""`, GDELT doesn't provide one), `news_source` (domain), `image_url` (GDELT's `socialimage`, may be empty), `date`
 
 #### `fetch_news_by_date(target_date, daily_cap=None)`
-The main entry point. Calls `fetch_gdelt_news` then `fetch_google_news`, deduplicating by link and by normalized title (GDELT wins ties since it's queried first and has real links/images). If `daily_cap` is set, sorts so image-bearing entries sort first (stable, so each source's own ordering is preserved within that split) and truncates to `daily_cap`. Finally, for every remaining article with a real (non-Google) link, fetches `fetch_meta` concurrently (`ThreadPoolExecutor(max_workers=6)`) to fill in `description` (always) and `image_url` (only if still empty) — safe to parallelize since it spreads across many different publisher domains rather than hammering one service.
+The main entry point. Calls `fetch_gdelt_news` then `fetch_google_news`, deduplicating by link and by normalized title (GDELT wins ties since it's queried first and has real links/images), dropping anything `_is_english_script` flags. If `daily_cap` is set, sorts so image-bearing entries sort first (stable, so each source's own ordering is preserved within that split) and truncates to `daily_cap`. For every remaining article with a real (non-Google) link, fetches `fetch_meta` concurrently (`ThreadPoolExecutor(max_workers=6)`) to fill in `description` (always) and `image_url` (only if still empty) — safe to parallelize since it spreads across many different publisher domains rather than hammering one service. Finally, every article that now has an `image_url` gets it verified with `is_image_reachable` (`ThreadPoolExecutor(max_workers=10)`); a dead link gets cleared to `""` rather than dropping the article.
 
 -   **Args:** `target_date` (timezone-aware `datetime`); `daily_cap` (`int | None`) — cap the per-day article count (used by `MissingDaysBackfiller`, not by the normal daily `insert_news.py` flow)
 -   **Returns:** `list[dict]` — `title`, `link`, `description`, `news_source`, `image_url`, `date` (`"YYYY-MM-DD"`)
@@ -50,18 +60,26 @@ The main entry point. Calls `fetch_gdelt_news` then `fetch_google_news`, dedupli
 ## `insert_news.py`
 
 #### `_build_records(articles)`
-Module-level helper shared by `NewsStorage` and `MissingDaysBackfiller`: converts `fetch_news_by_date`'s article dicts into rows shaped for `DatabaseConnection.insert_records` (adds a shared `created_at` timestamp).
+Module-level helper shared by `NewsStorage` and `MissingDaysBackfiller`: converts `fetch_news_by_date`'s article dicts into rows shaped for `DatabaseConnection.insert_records` (adds a shared `created_at` timestamp and a `relevance_score` from `lib.relevance.score_article`).
+
+#### `enrich_day(db, day)`
+Post-insert steps for one date, run by `NewsStorage`, `MissingDaysBackfiller` and the `enrich` subcommand: (1) embed rows with no embedding yet via `lib.embeddings` (skipped without `VOYAGE_API_KEY`), (2) generate and upsert the daily digest from the day's top-ranked 40 stories via `lib.digest` (skipped without `ANTHROPIC_API_KEY`), (3) `NOTIFY news_updated` so running API instances drop their cache for that date and push a WebSocket update. Steps 1 and 2 log and continue on failure; the NOTIFY always runs. Accepts a `date` or an aware `datetime`.
+
+#### `rescore(db, start_date=None, end_date=None)` / `backfill_embeddings(db, batch=1000)`
+One-off maintenance helpers behind the `rescore` and `backfill-embeddings` subcommands (see the main README).
 
 #### `NewsStorage`
 Fetches and stores news for a date or date range — the class behind the default (no-subcommand) CLI usage documented in the main README.
 
--   **`save_news_by_date(target_date)`** — fetches one day via `fetch_news_by_date` (no cap) and bulk-inserts. Returns the number of rows saved (`0` on no results or an insert error, logged either way).
+-   **`save_news_by_date(target_date)`** — fetches one day via `fetch_news_by_date` (no cap), bulk-inserts (skipping links already stored), then runs `enrich_day`. Returns the number of *new* rows saved (`0` on no results or an insert error, logged either way). If GDELT contributed nothing for the day (every returned link is a Google redirect — GDELT's cooldown/retry in `fetch_gdelt_news` was exhausted), or nothing was fetched at all, the date is appended to `self.degraded_days` rather than raising, so a bad day doesn't stop the rest of a multi-day range.
 -   **`run(start_date_str=None, end_date_str=None)`** — resolves the date range via `Utility.get_date_range`, then calls `save_news_by_date` for each day via `Utility.process_date_range` (2s delay between days). Prints a running total.
+
+The CLI entry point (`python insert_news.py [start] [end]`) checks `storage.degraded_days` after `run()` and exits `1` if it's non-empty — a day silently falling back to Google-RSS-only (no images/descriptions) is a real failure worth a red workflow run, not a quiet success. This is the only path in the file that can fail the process; `MissingDaysBackfiller`/`DescriptionRepairer` always exit `0` since they're re-runnable maintenance tools, not the thing users watch for day-to-day health.
 
 #### `MissingDaysBackfiller`
 Replaces the old standalone `backfill_missing_news.py` script. `DAILY_CAP = 15`, matching the site's historical density.
 
--   **`run()`** — finds every zero-row date via `DatabaseConnection.find_missing_dates()`, scrapes **all** of them (`fetch_news_by_date(..., daily_cap=15)`) into one in-memory list, then inserts everything in a **single** `insert_records` call — bulk-scrape-then-bulk-ingest rather than one insert per day. A per-day scrape failure is logged and skipped; it doesn't abort the run.
+-   **`run()`** — finds every zero-row date via `DatabaseConnection.find_missing_dates()`, scrapes **all** of them (`fetch_news_by_date(..., daily_cap=15)`) into one in-memory list, then inserts everything in a **single** `insert_records` call — bulk-scrape-then-bulk-ingest rather than one insert per day — and finally runs `enrich_day` for each backfilled date. A per-day scrape failure is logged and skipped; it doesn't abort the run.
 -   **Usage:** `python insert_news.py backfill-missing`
 
 #### `DescriptionRepairer`
@@ -82,20 +100,8 @@ Replaces the old standalone `backfill_descriptions.py` script. `WORKERS = 10`.
 
 ---
 
-## `sort-news.py`
-
-Standalone ranking-refresh script — fetches every row from a `news_articles` table (note: a different table name than `news`, which is what `insert_news.py`/`delete_news.py` operate on; this script predates or is independent of that table's current usage), scores each with `lib.equation.RankingEquation`, and writes the resulting `final_score` back to an `article_score` column.
-
--   **`fetch_articles_from_database()`** — `DatabaseConnection("news_articles").fetch_records(limit=1000)`.
--   **`update_article_scores_in_database(sorted_articles)`** — calls `DatabaseConnection.update_record(article.id, {"article_score": ...})` once per article (not batched — a candidate for the same `insert_records`/`update_descriptions`-style bulk treatment if this script sees regular use again).
--   **`main()`** — fetches, builds `RankingEquation` objects per row, calls `RankingEquation.rank_articles(...)` from `lib/equation.py` (briefly: computes uniqueness via TF-IDF cosine similarity, engagement from votes/shares/comments, exponential recency decay, source trust, content quality via readability/grammar, and a weighted final score), then persists the scores.
-
-## `deepseek-test.py`
-
-Ad-hoc scratch script, not part of any production flow: sends a hardcoded news excerpt to the DeepSeek chat API (`DSK_API_KEY` env var) asking for a 100-word summary, and prints the response. Useful as a minimal reference for wiring up an AI-summarization call if that "AI Summarize news" feature (listed in the main README's Features section) gets built out, but isn't invoked anywhere else in the codebase.
-
 ---
 
 ## `Dockerfile`
 
-Builds the image `.github/workflows/build-push.yml` publishes and `daily-run.yml` runs on a schedule (see [github.md](github.md)). `python:3.12-slim` base; installs `libopenblas-dev`/`build-essential` (needed for SciPy/scikit-learn, pulled in by `lib/equation.py`'s dependencies even though the daily insert job itself doesn't use them) and `requirements.txt`; copies in only `insert_news.py`, `news_scraper.py`, and `lib/` (not `sort-news.py`, `delete_news.py`, or `server/`); default `CMD` is `python insert_news.py` (i.e. today's date, no arguments — the normal daily flow, not the `backfill-missing`/`repair-descriptions` subcommands).
+Builds the image `.github/workflows/build-push.yml` publishes and `daily-run.yml` runs on a schedule (see [github.md](github.md)). `python:3.12-slim` base; installs `requirements.txt` (all wheels, so no compiler packages); copies in only `insert_news.py`, `news_scraper.py`, and `lib/` (not `delete_news.py` or `tests/`); runs as an unprivileged `pipeline` user. Default `CMD` is `python insert_news.py yesterday today` — re-scraping yesterday picks up stories published after the previous run, and duplicate links are skipped on insert.

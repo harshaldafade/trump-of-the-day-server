@@ -1,10 +1,16 @@
 import os
 import psycopg2
 from psycopg2 import sql
-from psycopg2.extras import RealDictCursor, execute_values
+from psycopg2.extras import Json, RealDictCursor, execute_values
 from dotenv import load_dotenv
 import datetime
 import time
+
+
+def today_utc():
+    """Today's date in UTC: the day boundary the site and API use, whatever the machine's timezone."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
 
 class Utility:
     """Utility class for Neon database operations common to both news storage and deletion."""
@@ -28,7 +34,9 @@ class Utility:
         try:
             # If no start date provided or 'today'/'t' specified, use today's date
             if not start_date_str or start_date_str.lower() in ['today', 't']:
-                start_date = datetime.date.today()
+                start_date = today_utc()
+            elif start_date_str.lower() in ['yesterday', 'y']:
+                start_date = today_utc() - datetime.timedelta(days=1)
             else:
                 # Parse the provided start date
                 start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
@@ -36,6 +44,8 @@ class Utility:
             # If no end date provided, use the same as start date
             if not end_date_str:
                 end_date = start_date
+            elif end_date_str.lower() in ['today', 't']:
+                end_date = today_utc()
             else:
                 # Parse the provided end date
                 end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
@@ -137,11 +147,16 @@ class DatabaseConnection:
         connection per row (matters once volumes get into the hundreds/thousands,
         both for speed and for not hammering Neon with connection churn).
 
+        Rows whose `link` already exists are skipped (`ON CONFLICT (link) DO
+        NOTHING`, backed by the news_link_key constraint from migration 002), so
+        re-running a day -- e.g. the daily job re-scraping yesterday to pick up
+        stories published after the previous run -- only adds what's new.
+
         Args:
             data_list (list[dict]): Records to insert; all dicts must share the same keys.
 
         Returns:
-            int: Number of rows inserted
+            int: Number of rows actually inserted (duplicates excluded)
 
         Raises:
             Exception: If an error occurs during insertion
@@ -154,14 +169,167 @@ class DatabaseConnection:
             values = [[row[c] for c in columns] for row in data_list]
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    query = sql.SQL("INSERT INTO {table} ({fields}) VALUES %s").format(
+                    query = sql.SQL(
+                        "INSERT INTO {table} ({fields}) VALUES %s ON CONFLICT (link) DO NOTHING RETURNING id"
+                    ).format(
                         table=sql.Identifier(self.table_name),
                         fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
                     ).as_string(cur)
-                    execute_values(cur, query, values)
-            return len(data_list)
+                    inserted = execute_values(cur, query, values, fetch=True)
+            return len(inserted)
         except Exception as e:
             raise Exception(f"Error bulk inserting data: {e}")
+
+    def fetch_ranked_by_date(self, date, limit=None):
+        """
+        Rows for one date, best relevance first -- the input to the daily digest.
+
+        Returns:
+            list[dict]: id, title, description, news_source, link
+        """
+        if isinstance(date, datetime.date):
+            date = date.strftime("%Y-%m-%d")
+        query = sql.SQL("""
+            SELECT id, title, description, news_source, link FROM {table}
+            WHERE date = %s
+            ORDER BY relevance_score DESC NULLS LAST, id
+            LIMIT %s
+        """).format(table=sql.Identifier(self.table_name))
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, [date, limit])
+                return [dict(row) for row in cur.fetchall()]
+
+    def find_rows_missing_embedding(self, date=None, limit=5000):
+        """
+        Rows with no embedding yet, optionally limited to one date.
+
+        Returns:
+            list[dict]: id, title, description
+        """
+        if isinstance(date, datetime.date):
+            date = date.strftime("%Y-%m-%d")
+        query = sql.SQL("""
+            SELECT id, title, description FROM {table}
+            WHERE embedding IS NULL AND (%s::date IS NULL OR date = %s::date)
+            ORDER BY id
+            LIMIT %s
+        """).format(table=sql.Identifier(self.table_name))
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, [date, date, limit])
+                return [dict(row) for row in cur.fetchall()]
+
+    def update_embeddings(self, updates):
+        """
+        Bulk-set embeddings.
+
+        Args:
+            updates (list[tuple]): (id, vector_literal) where vector_literal is
+                pgvector text like '[0.1,0.2,...]' (lib.embeddings.to_vector_literal)
+
+        Returns:
+            int: Number of rows updated
+        """
+        if not updates:
+            return 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    sql.SQL(
+                        "UPDATE {table} SET embedding = data.embedding::vector "
+                        "FROM (VALUES %s) AS data(id, embedding) "
+                        "WHERE {table}.id = data.id"
+                    ).format(table=sql.Identifier(self.table_name)).as_string(cur),
+                    updates,
+                )
+        return len(updates)
+
+    def fetch_for_scoring(self, start_date=None, end_date=None):
+        """
+        Columns lib.relevance.score_article reads, for re-scoring existing rows.
+
+        Returns:
+            list[dict]: id, title, description, link, news_source, image_url
+        """
+        query = sql.SQL("""
+            SELECT id, title, description, link, news_source, image_url FROM {table}
+            WHERE (%s::date IS NULL OR date >= %s::date) AND (%s::date IS NULL OR date <= %s::date)
+        """).format(table=sql.Identifier(self.table_name))
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, [start_date, start_date, end_date, end_date])
+                return [dict(row) for row in cur.fetchall()]
+
+    def update_relevance(self, updates):
+        """
+        Bulk-set relevance_score.
+
+        Args:
+            updates (list[tuple]): (id, score)
+
+        Returns:
+            int: Number of rows updated
+        """
+        if not updates:
+            return 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    sql.SQL(
+                        "UPDATE {table} SET relevance_score = data.score "
+                        "FROM (VALUES %s) AS data(id, score) "
+                        "WHERE {table}.id = data.id"
+                    ).format(table=sql.Identifier(self.table_name)).as_string(cur),
+                    updates,
+                )
+        return len(updates)
+
+    def upsert_digest(self, date, digest):
+        """
+        Insert or replace the daily_digest row for `date`.
+
+        Args:
+            digest (dict): summary, paragraphs, top_story_ids, model (lib.digest.generate_digest
+                output). paragraphs (sentences with the story ids they cite) may be None.
+        """
+        if isinstance(date, datetime.date):
+            date = date.strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO daily_digest (date, summary, paragraphs, top_story_ids, model)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (date) DO UPDATE SET
+                        summary = EXCLUDED.summary,
+                        paragraphs = EXCLUDED.paragraphs,
+                        top_story_ids = EXCLUDED.top_story_ids,
+                        model = EXCLUDED.model,
+                        created_at = now()
+                    """,
+                    [
+                        date,
+                        digest["summary"],
+                        Json(digest["paragraphs"]) if digest.get("paragraphs") else None,
+                        digest["top_story_ids"],
+                        digest["model"],
+                    ],
+                )
+
+    def notify_news_updated(self, date):
+        """
+        Tell running API instances that `date` changed (Postgres NOTIFY on
+        channel news_updated). Each instance drops its cached copy of that date
+        and pushes a WebSocket message to connected browsers.
+        """
+        if isinstance(date, datetime.date):
+            date = date.strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_notify('news_updated', %s)", [date])
 
     def update_record(self, id, data):
         """

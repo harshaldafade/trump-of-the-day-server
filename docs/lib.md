@@ -150,8 +150,34 @@ Bulk-updates `description` and `image_url` for many rows in one connection/trans
     ```
 -   **Used by:** `insert_news.py`'s `DescriptionRepairer`
 
+#### Enrichment helpers
+Added for relevance ranking, embeddings and the daily digest (migration 002). All take a `date` or `"YYYY-MM-DD"` where a date is involved.
+
+-   **`fetch_ranked_by_date(date, limit=None)`** — `id, title, description, news_source, link` for one date, `relevance_score DESC NULLS LAST`. Input to the daily digest.
+-   **`find_rows_missing_embedding(date=None, limit=5000)`** — `id, title, description` of rows with `embedding IS NULL`, optionally for one date.
+-   **`update_embeddings(updates)`** — bulk-sets `embedding` from `(id, vector_literal)` tuples (`lib.embeddings.to_vector_literal`).
+-   **`fetch_for_scoring(start_date=None, end_date=None)`** / **`update_relevance(updates)`** — read the columns `score_article` needs and bulk-write `(id, score)`.
+-   **`upsert_digest(date, digest)`** — insert or replace the `daily_digest` row.
+-   **`notify_news_updated(date)`** — `SELECT pg_notify('news_updated', date)`. The API LISTENs on this channel.
+
+`insert_records` now ends in `ON CONFLICT (link) DO NOTHING RETURNING id` and returns how many rows were actually inserted, so re-running a day only adds what's new.
+
+`Utility.get_date_range` also accepts `yesterday`/`y` as the start date and `today`/`t` as the end date.
+
 ---
 
-## Other files in this directory
+## `relevance.py`
 
--   **`equation.py`** — `RankingEquation`, the article-ranking scoring model (sentiment, keywords, grammar, engagement, recency, legitimacy, etc.) used by `sort-news.py`. Not covered here since this page is scoped to `utils.py`; see [scripts.md](scripts.md#sort-newspy) for a summary alongside `sort-news.py`.
+Heuristic relevance scoring. `score_article(article)` returns a float (roughly -3 to 8) from: "Trump" in the headline (+3) or only in the description (+1.5); administration keywords in the headline (+1.5); a reputable outlet domain or subdomain (+1.5); a description (+0.5) and image (+0.5); minus 3 for idioms like "trump card" (which are also removed before the name check), minus 1 for unresolvable Google redirect links, minus 0.5 for very short headlines. `rank(articles)` sorts best-first. Scores are stored in `news.relevance_score`; the API orders each day by it and the digest reads the top 40. Pure functions, covered by `tests/test_relevance.py`.
+
+## `digest.py`, `digest_openrouter.py`, `digest_anthropic.py`
+
+`digest.generate_digest(date, stories)` writes the daily brief with whichever provider `digest.provider()` picks: `DIGEST_PROVIDER` if set, otherwise OpenRouter if `OPENROUTER_API_KEY` is set, otherwise Anthropic if `ANTHROPIC_API_KEY` is. `digest.py` holds what both share: the system prompt, `build_prompt`, the JSON schema, `parse_json_text` (tolerates code fences and surrounding prose), and `validate`. The model returns the summary sentence by sentence, each sentence with the ids of the one to three stories that support it (`paragraphs`), plus up to five `top_story_ids`. `validate` drops citations and top ids for stories the model wasn't shown (the sentence stays, uncited), builds the plain `summary` from the sentences, and accepts a bare `{"summary": …}` from a model that ignores the schema, in which case `paragraphs` is `None`.
+
+**`digest_openrouter.generate`** calls `https://openrouter.ai/api/v1/chat/completions` with `requests`, at $0. By default it sends `model: "openrouter/free"`, OpenRouter's [Free Router](https://openrouter.ai/docs/guides/routing/routers/free-router). The router picks a currently available free model at random from those that support the request's features (here, structured output), so there's no list of model ids to maintain. The response's `model` field (e.g. `upstage/solar-pro-3:free`) is the model that actually wrote the brief. It's stored in `daily_digest.model` and shown on the site. Setting `OPENROUTER_MODELS` pins specific free models instead: one id goes in `model`, several go in OpenRouter's `models` fallback list. It asks for a JSON schema response. If that attempt fails (a model rejects `response_format`, or returns prose), it retries once without it and relies on the prompt's "respond with only JSON". Reasoning is capped with `reasoning: {effort: "low", exclude: true}` and `max_tokens` is 8000: some free models think before answering, reasoning tokens count against `max_tokens`, and without the cap one spent its whole budget thinking and returned no answer.
+
+**`digest_anthropic.generate`** asks Claude (`ANTHROPIC_MODEL`, default `claude-opus-5-5`) (effort `medium`) for a two-to-three paragraph neutral summary with per-sentence citations plus up to five top story ids, using structured output (a JSON schema) so the reply is always parseable. Only headlines and the scraped publisher descriptions are sent, and the system prompt tells the model to treat them as data. On models that support it, server-side refusal fallbacks (`fallbacks="default"`) are on, so a safety-classifier decline on violent or extremist news is retried on the API's default fallback model. `claude-haiku-5-5` (about $0.05/month here) doesn't support them, so they're left off for it. `parse_response` rejects refusals and truncated output.
+
+## `embeddings.py`
+
+`embed_documents(texts)` embeds with Voyage `voyage-3.5` (`input_type="document"`, 1024 dimensions) in batches of 128. `document_text(row)` is `title + "\n\n" + description`. The API embeds search queries with the same model (`input_type="query"`), so keep the model name in sync with `api/src/embeddings.ts` in the parent repo. Needs `VOYAGE_API_KEY`.
