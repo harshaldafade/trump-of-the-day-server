@@ -10,9 +10,11 @@ class FakeDb:
         self.missing = missing or []
         self.ranked = ranked or []
         self.calls = []
+        self.top_n_seen = []
 
-    def find_rows_missing_embedding(self, date=None, limit=5000):
+    def find_rows_missing_embedding(self, date=None, limit=5000, top_n=None):
         self.calls.append(("missing", date))
+        self.top_n_seen.append(top_n)
         return self.missing
 
     def update_embeddings(self, updates):
@@ -61,6 +63,36 @@ def test_enrich_day_runs_all_steps_in_order(monkeypatch):
 
     d = datetime.date(2025, 3, 1)
     assert db.calls == [("missing", d), ("embeddings", 1), ("digest", d, "S 2025-03-01"), ("notify", d)]
+
+
+def test_enrich_day_only_asks_for_the_days_top_stories(monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("EMBED_TOP_PER_DAY", raising=False)
+    db = FakeDb()
+    insert_news.enrich_day(db, datetime.date(2025, 3, 1))
+    assert db.top_n_seen == [50]
+
+    monkeypatch.setenv("EMBED_TOP_PER_DAY", "20")
+    insert_news.enrich_day(db, datetime.date(2025, 3, 1))
+    assert db.top_n_seen == [50, 20]
+
+
+def test_backfill_embeddings_uses_the_same_limit_and_stops(monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    monkeypatch.setenv("EMBED_TOP_PER_DAY", "0")  # 0 = embed everything
+    monkeypatch.setattr(embeddings, "embed_documents", lambda texts: [[0.0] * 1024 for _ in texts])
+
+    class OneBatchDb(FakeDb):
+        def find_rows_missing_embedding(self, date=None, limit=5000, top_n=None):
+            self.top_n_seen.append(top_n)
+            return [{"id": 1, "title": "t", "description": "d"}] if len(self.top_n_seen) == 1 else []
+
+    db = OneBatchDb()
+    assert insert_news.backfill_embeddings(db) == 1
+    assert db.top_n_seen == [None, None]
 
 
 def test_enrich_day_survives_digest_failure(monkeypatch):

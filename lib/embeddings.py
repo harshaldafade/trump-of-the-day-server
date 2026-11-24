@@ -11,6 +11,27 @@ MODEL = "voyage-3.5"
 DIMENSIONS = 1024
 BATCH_SIZE = 128
 
+# Each vector costs about 12 KB once its HNSW index entry is counted, against about
+# 2 KB for the story without one, so only each day's best-ranked stories are embedded.
+# Search and "related coverage" cover those; the rest stay in the feed unembedded.
+DEFAULT_TOP_PER_DAY = 50
+
+
+def top_per_day():
+    """How many of each day's stories (by relevance_score) get an embedding.
+
+    EMBED_TOP_PER_DAY overrides the default; 0 means no limit (embed everything).
+    Returns None for no limit. A value that isn't a number falls back to the default.
+    """
+    raw = os.getenv("EMBED_TOP_PER_DAY", "").strip()
+    if not raw:
+        return DEFAULT_TOP_PER_DAY
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TOP_PER_DAY
+    return value if value > 0 else None
+
 
 def document_text(row):
     """What gets embedded for an article: headline plus publisher description."""

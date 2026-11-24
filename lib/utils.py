@@ -201,9 +201,16 @@ class DatabaseConnection:
                 cur.execute(query, [date, limit])
                 return [dict(row) for row in cur.fetchall()]
 
-    def find_rows_missing_embedding(self, date=None, limit=5000):
+    def find_rows_missing_embedding(self, date=None, limit=5000, top_n=None):
         """
         Rows with no embedding yet, optionally limited to one date.
+
+        Args:
+            top_n (int | None): only rows ranked in their day's top `top_n` by
+                relevance_score (same order as fetch_ranked_by_date). The rank counts
+                every row of the day, embedded or not, so stories already embedded
+                keep their place and a late arrival that outranks them is picked up.
+                None means no limit.
 
         Returns:
             list[dict]: id, title, description
@@ -211,14 +218,21 @@ class DatabaseConnection:
         if isinstance(date, datetime.date):
             date = date.strftime("%Y-%m-%d")
         query = sql.SQL("""
-            SELECT id, title, description FROM {table}
-            WHERE embedding IS NULL AND (%s::date IS NULL OR date = %s::date)
+            SELECT id, title, description FROM (
+                SELECT id, title, description, embedding,
+                       row_number() OVER (
+                           PARTITION BY date ORDER BY relevance_score DESC NULLS LAST, id
+                       ) AS day_rank
+                FROM {table}
+                WHERE %s::date IS NULL OR date = %s::date
+            ) ranked
+            WHERE embedding IS NULL AND (%s::int IS NULL OR day_rank <= %s::int)
             ORDER BY id
             LIMIT %s
         """).format(table=sql.Identifier(self.table_name))
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(query, [date, date, limit])
+                cur.execute(query, [date, date, top_n, top_n, limit])
                 return [dict(row) for row in cur.fetchall()]
 
     def update_embeddings(self, updates):

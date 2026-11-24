@@ -36,3 +36,19 @@ def test_embed_documents_rejects_wrong_dimensions():
 
 def test_vector_literal():
     assert embeddings.to_vector_literal([0.1, -2, 3.25]) == "[0.1,-2,3.25]"
+
+
+def test_top_per_day_defaults_to_50_and_reads_the_override(monkeypatch):
+    monkeypatch.delenv("EMBED_TOP_PER_DAY", raising=False)
+    assert embeddings.top_per_day() == 50
+    monkeypatch.setenv("EMBED_TOP_PER_DAY", "25")
+    assert embeddings.top_per_day() == 25
+
+
+def test_top_per_day_zero_means_no_limit_and_junk_falls_back(monkeypatch):
+    monkeypatch.setenv("EMBED_TOP_PER_DAY", "0")
+    assert embeddings.top_per_day() is None
+    monkeypatch.setenv("EMBED_TOP_PER_DAY", "-3")
+    assert embeddings.top_per_day() is None
+    monkeypatch.setenv("EMBED_TOP_PER_DAY", "lots")
+    assert embeddings.top_per_day() == 50

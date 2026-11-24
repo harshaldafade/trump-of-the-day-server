@@ -31,7 +31,8 @@ def _as_date(value):
 def enrich_day(db, day):
     """Post-insert steps for one date, each skipped if its API key isn't set:
 
-    1. embed rows that don't have an embedding yet (Voyage)
+    1. embed the day's best-ranked rows that don't have an embedding yet (Voyage;
+       the top EMBED_TOP_PER_DAY, 50 by default)
     2. (re)write the daily digest from the day's top-ranked stories (Claude)
     3. tell running API instances so they drop their cache and push to browsers:
        Postgres NOTIFY (the AWS stack listens) and Redis pub/sub through Upstash
@@ -44,7 +45,7 @@ def enrich_day(db, day):
 
     if embeddings.is_configured():
         try:
-            rows = db.find_rows_missing_embedding(date=day)
+            rows = db.find_rows_missing_embedding(date=day, top_n=embeddings.top_per_day())
             if rows:
                 vectors = embeddings.embed_documents([embeddings.document_text(r) for r in rows])
                 db.update_embeddings([
@@ -69,13 +70,13 @@ def enrich_day(db, day):
     except Exception as e:
         print(f"⚠️ NOTIFY failed for {day}: {e}")
 
-
     if live.is_configured():
         try:
             replicas = live.announce(day)
             print(f"📣 Announced {day} to {replicas} API replica(s)")
         except Exception as e:
             print(f"⚠️ Redis announce failed for {day}: {e}")
+
 
 class NewsStorage:
     """Fetches and stores news for a given date or date range."""
@@ -241,16 +242,6 @@ class DescriptionRepairer:
         return count
 
 
-def rescore(db, start_date=None, end_date=None):
-    """Recompute relevance_score for existing rows (all rows if no range given)."""
-    rows = db.fetch_for_scoring(start_date, end_date)
-    count = db.update_relevance([(r["id"], score_article(r)) for r in rows])
-    print(f"✅ Rescored {count} rows.")
-    return count
-
-
-def backfill_embeddings(db, batch=1000):
-    """Embed every row that has no embedding, `batch` rows per round trip."""
 class ImageRepairer:
     """Finds rows with no thumbnail and takes one from the article page's og:image
     (or Twitter card / JSON-LD), keeping it only if it actually loads as an image.
@@ -295,12 +286,27 @@ class ImageRepairer:
         return count
 
 
+def rescore(db, start_date=None, end_date=None):
+    """Recompute relevance_score for existing rows (all rows if no range given)."""
+    rows = db.fetch_for_scoring(start_date, end_date)
+    count = db.update_relevance([(r["id"], score_article(r)) for r in rows])
+    print(f"✅ Rescored {count} rows.")
+    return count
+
+
+def backfill_embeddings(db, batch=1000):
+    """Embed each day's best-ranked rows that have no embedding, `batch` rows per round trip.
+
+    Same limit as enrich_day: the top EMBED_TOP_PER_DAY stories of every day (50 by
+    default, 0 for all). Rows beyond it are left alone, so this terminates.
+    """
     if not embeddings.is_configured():
         print("❌ VOYAGE_API_KEY is not set.")
         return 0
+    top_n = embeddings.top_per_day()
     total = 0
     while True:
-        rows = db.find_rows_missing_embedding(limit=batch)
+        rows = db.find_rows_missing_embedding(limit=batch, top_n=top_n)
         if not rows:
             break
         vectors = embeddings.embed_documents([embeddings.document_text(r) for r in rows])
@@ -321,6 +327,8 @@ if __name__ == "__main__":
         MissingDaysBackfiller(DatabaseConnection(table_name="news")).run()
     elif args and args[0] == "repair-descriptions":
         DescriptionRepairer(DatabaseConnection(table_name="news")).run()
+    elif args and args[0] == "repair-images":
+        ImageRepairer(DatabaseConnection(table_name="news")).run()
     elif args and args[0] == "rescore":
         rescore(DatabaseConnection(table_name="news"), *args[1:3])
     elif args and args[0] == "backfill-embeddings":
@@ -336,8 +344,6 @@ if __name__ == "__main__":
     else:
         start_date_arg = args[0] if len(args) > 0 else None
         end_date_arg = args[1] if len(args) > 1 else None
-    elif args and args[0] == "repair-images":
-        ImageRepairer(DatabaseConnection(table_name="news")).run()
         storage = NewsStorage()
         storage.run(start_date_arg, end_date_arg)
         if storage.degraded_days:
