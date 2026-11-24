@@ -4,6 +4,9 @@ All notable changes to the news pipeline. The format follows [Keep a Changelog](
 
 ## [Unreleased]
 
+### Changed
+- Embeddings are limited to each day's top 50 stories by `relevance_score` (`EMBED_TOP_PER_DAY`; `0` embeds everything). A vector plus its HNSW index entry takes about 12 KB per story against about 2 KB for the story without one, and the index was the largest object in the database. `find_rows_missing_embedding` takes a `top_n` argument that ranks the whole day (embedded or not), so stories that are already embedded keep their place and a late arrival that outranks them is still picked up. `enrich` and `backfill-embeddings` use the same limit. Existing embeddings are left in place; nothing is removed.
+
 ### Added
 - Sentence-level citations: the digest schema asks for the summary as paragraphs of sentences, each with the ids of the one to three stories that support it. Stored in the new `daily_digest.paragraphs` JSONB column (added to `schema.sql` and to migration 002 with `ADD COLUMN IF NOT EXISTS`). Citations to stories the model wasn't shown are dropped; a plain `{"summary"}` reply is still accepted without citations.
 - OpenRouter digests make up to three attempts (two structured, then plain), each re-routed, and a cut-off error names the model and its reasoning token count. With citations, some free models (seen: `liquid/lfm-3-1.7b:free`, `nvidia/nemotron-3.5-lightning:free`) ignore the reasoning cap and think until `max_tokens` in about a third of attempts.
@@ -18,9 +21,11 @@ All notable changes to the news pipeline. The format follows [Keep a Changelog](
 - `yesterday`/`y` start-date and `today`/`t` end-date keywords for `insert_news.py`.
 - `pytest` suite (`tests/`) and a `test.yml` workflow; `requirements-dev.txt`; `pytest.ini`.
 - `workflow_dispatch` trigger on `build-push.yml`.
+- `repair-images` subcommand: fills `image_url` from the article page for rows without one (skips Google News redirect links, which can't be resolved).
+- `lib/live.py`: after each processed day, `enrich_day` announces it to the production API through Upstash's REST API (deletes the day's cached response, `PUBLISH news_updated <date>`), so every Cloud Run instance pushes a live update to its browsers. Skipped without `UPSTASH_REDIS_REST_URL`/`_TOKEN`; `daily-run.yml` passes them. The Postgres `NOTIFY` stays for the AWS stack.
 
 ### Changed
-- Inserts skip links that are already stored (`ON CONFLICT (link) DO NOTHING`) and report how many rows were actually new. The table now has a `UNIQUE (link)` constraint and an index on `date`.
+- Inserts skip links that are already stored (`ON CONFLICT (md5(link)) DO NOTHING`) and report how many rows were actually new. The table now has a unique index on `md5(link)` (`news_link_md5_key`) and an index on `date`.
 - The daily job runs `insert_news.py yesterday today` instead of only today, so stories published after the previous run's 14:00 UTC cut-off are picked up.
 - `daily-run.yml` passes `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` (secrets) and `OPENROUTER_MODELS`, `DIGEST_PROVIDER` and `ANTHROPIC_MODEL` (variables) to the container.
 - `requirements.txt` lists only direct dependencies (was a 59-package freeze including the ranking experiment's ML stack); the Docker image no longer installs compiler/BLAS packages and runs as a non-root user.
@@ -32,6 +37,7 @@ All notable changes to the news pipeline. The format follows [Keep a Changelog](
 - `NewsStorage.save_news_by_date` crashed with `AttributeError` when recording a degraded day, because `process_date_range` passes `date` objects (which have no `.date()`).
 - OpenRouter digests could come back empty: the free router can pick a reasoning model (seen: `nvidia/nemotron-3.5-super-vl:free`), whose reasoning tokens count against `max_tokens`. It spent all 4000 thinking and wrote no answer, on both attempts. Requests now send `reasoning: {effort: "low", exclude: true}` and `max_tokens: 8000`; found and verified with real calls against a local database.
 - `today`/`yesterday` used the machine's local date, so outside UTC (e.g. US evenings) a manual run processed the wrong days. They now use the UTC date, matching the site and the API. GitHub's runners are on UTC, so the scheduled job was unaffected.
+- Migration 002 failed on the production data with `index row size 3640 exceeds btree version 4 maximum 2704 for index "news_link_key"`: some links (Google News redirect URLs) are several KB, too large for a plain `UNIQUE (link)`. Uniqueness is now a unique index on `md5(link)`, inserts use `ON CONFLICT (md5(link))`, and the migration drops the old constraint where an earlier run added it. The migration is one transaction, so the failed run changed nothing.
 
 ### Removed
 - `server/` (Express/Passport auth backend): unused by the site and not deployed. Its `users` table is no longer in `schema.sql` but isn't dropped from existing databases.

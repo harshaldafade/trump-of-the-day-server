@@ -63,10 +63,10 @@ The main entry point. Calls `fetch_gdelt_news` then `fetch_google_news`, dedupli
 Module-level helper shared by `NewsStorage` and `MissingDaysBackfiller`: converts `fetch_news_by_date`'s article dicts into rows shaped for `DatabaseConnection.insert_records` (adds a shared `created_at` timestamp and a `relevance_score` from `lib.relevance.score_article`).
 
 #### `enrich_day(db, day)`
-Post-insert steps for one date, run by `NewsStorage`, `MissingDaysBackfiller` and the `enrich` subcommand: (1) embed rows with no embedding yet via `lib.embeddings` (skipped without `VOYAGE_API_KEY`), (2) generate and upsert the daily digest, with per-sentence citations, from the day's top-ranked 40 stories via `lib.digest` (skipped when no provider key is set: `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`), (3) `NOTIFY news_updated` so running API instances drop their cache for that date and push a WebSocket update. Steps 1 and 2 log and continue on failure; the NOTIFY always runs. Accepts a `date` or an aware `datetime`.
+Post-insert steps for one date, run by `NewsStorage`, `MissingDaysBackfiller` and the `enrich` subcommand: (1) embed the day's top-ranked rows (`EMBED_TOP_PER_DAY`, 50 by default) that have no embedding yet via `lib.embeddings` (skipped without `VOYAGE_API_KEY`), (2) generate and upsert the daily digest, with per-sentence citations, from the day's top-ranked 40 stories via `lib.digest` (skipped when no provider key is set: `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`), (3) `NOTIFY news_updated` so running API instances drop their cache for that date and push a WebSocket update. Steps 1 and 2 log and continue on failure; the NOTIFY always runs. Accepts a `date` or an aware `datetime`.
 
 #### `rescore(db, start_date=None, end_date=None)` / `backfill_embeddings(db, batch=1000)`
-One-off maintenance helpers behind the `rescore` and `backfill-embeddings` subcommands (see the main README).
+One-off maintenance helpers behind the `rescore` and `backfill-embeddings` subcommands (see [cli.md](cli.md)). `backfill_embeddings` applies the same per-day limit as `enrich_day`, so it embeds each day's top `EMBED_TOP_PER_DAY` stories that lack a vector and then stops.
 
 #### `NewsStorage`
 Fetches and stores news for a date or date range — the class behind the default (no-subcommand) CLI usage documented in the main README.
@@ -87,6 +87,12 @@ Replaces the old standalone `backfill_descriptions.py` script. `WORKERS = 10`.
 
 -   **`run()`** — finds candidate rows via `DatabaseConnection.find_rows_missing_description()`, fetches each concurrently via `fetch_meta` (skipping Google-redirect links via `is_google_link`), and bulk-updates via `DatabaseConnection.update_descriptions()`. Rows where no description could be found (dead links, paywalls, sites without OG/JSON-LD tags) are left untouched.
 -   **Usage:** `python insert_news.py repair-descriptions`
+
+#### `ImageRepairer`
+Same shape as `DescriptionRepairer`, for thumbnails. `WORKERS = 10`.
+
+-   **`run()`** — finds rows with an empty or `"No Image Available"` `image_url` and a non-Google link via `DatabaseConnection.find_rows_missing_image()`, takes the image `fetch_meta` finds on each article page, keeps it only if `is_image_reachable` confirms it loads as an image, and bulk-updates via `DatabaseConnection.update_images()`. Google News redirect links are skipped: newer ones (`CBMi…AU_yq…`) don't contain the article URL, so there's no page to read.
+-   **Usage:** `python insert_news.py repair-images`
 
 ---
 

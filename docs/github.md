@@ -16,14 +16,14 @@ Builds the project's `Dockerfile` and pushes it to GitHub Container Registry as 
 ## `workflows/daily-run.yml`
 **Trigger:** `schedule` (`0 14 * * *` — daily at 14:00 UTC) or manual `workflow_dispatch`
 
-The actual production job: pulls the image `build-push.yml` published and runs it once (`insert_news.py yesterday today`), passing `DATABASE_URL`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` through from repository secrets, and the optional `OPENROUTER_MODELS`, `DIGEST_PROVIDER` and `ANTHROPIC_MODEL` repository variables. The AI keys are optional — if one isn't set, that enrichment step is skipped and the raw feed is still inserted. For a $0 setup, set only `OPENROUTER_API_KEY` and `VOYAGE_API_KEY`.
+The actual production job: pulls the image `build-push.yml` published and runs it once (`insert_news.py yesterday today`), passing `DATABASE_URL`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` through from repository secrets, and the optional `OPENROUTER_MODELS`, `DIGEST_PROVIDER` and `ANTHROPIC_MODEL` repository variables. The AI keys are optional — if one isn't set, that enrichment step is skipped and the raw feed is still inserted. For a $0 setup, set only `OPENROUTER_API_KEY` and `VOYAGE_API_KEY`.
 
 -   **Job:** `run-docker` (`ubuntu-latest`)
     1. Log in to `ghcr.io`
     2. `docker pull` the latest image
     3. `docker run` it with the secrets injected
 
--   **⚠️ Known gotcha (documented in the file itself):** GitHub auto-disables `schedule` triggers after ~60 days of repository inactivity, and a new push does **not** re-enable it — re-enabling requires a manual click on the workflow's page in the Actions tab. If daily news stops updating, check for a "this scheduled workflow is disabled" banner there first.
+-   **⚠️ Known gotcha (documented in the file itself):** GitHub auto-disables `schedule` triggers after ~60 days of repository inactivity, and a new push does **not** re-enable it — re-enabling requires a manual click on the workflow's page in the Actions tab. If daily news stops updating, check for a "this scheduled workflow is disabled" banner there first. This happened in production: no commits from 2026-09-04 meant no runs after 2026-11-03, and Nov 4–18 had to be backfilled.
 
 ## `workflows/test.yml`
 **Trigger:** `push` to `main` and every pull request

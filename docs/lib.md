@@ -155,13 +155,13 @@ Bulk-updates `description` and `image_url` for many rows in one connection/trans
 Added for relevance ranking, embeddings and the daily digest (migration 002). All take a `date` or `"YYYY-MM-DD"` where a date is involved.
 
 -   **`fetch_ranked_by_date(date, limit=None)`** — `id, title, description, news_source, link` for one date, `relevance_score DESC NULLS LAST`. Input to the daily digest.
--   **`find_rows_missing_embedding(date=None, limit=5000)`** — `id, title, description` of rows with `embedding IS NULL`, optionally for one date.
+-   **`find_rows_missing_embedding(date=None, limit=5000, top_n=None)`** — `id, title, description` of rows with `embedding IS NULL`, optionally for one date. With `top_n`, only rows ranked in their day's top `top_n` (`relevance_score DESC NULLS LAST, id`, the same order as `fetch_ranked_by_date`). The rank is computed over every row of the day, embedded or not, so already-embedded stories keep their place.
 -   **`update_embeddings(updates)`** — bulk-sets `embedding` from `(id, vector_literal)` tuples (`lib.embeddings.to_vector_literal`).
 -   **`fetch_for_scoring(start_date=None, end_date=None)`** / **`update_relevance(updates)`** — read the columns `score_article` needs and bulk-write `(id, score)`.
 -   **`upsert_digest(date, digest)`** — insert or replace the `daily_digest` row.
 -   **`notify_news_updated(date)`** — `SELECT pg_notify('news_updated', date)`. The API LISTENs on this channel.
 
-`insert_records` now ends in `ON CONFLICT (link) DO NOTHING RETURNING id` and returns how many rows were actually inserted, so re-running a day only adds what's new.
+`insert_records` now ends in `ON CONFLICT (md5(link)) DO NOTHING RETURNING id` (the unique index is on the link's hash, since some links are too long to index) and returns how many rows were actually inserted, so re-running a day only adds what's new.
 
 `Utility.get_date_range` also accepts `yesterday`/`y` as the start date and `today`/`t` as the end date.
 
@@ -179,6 +179,10 @@ Heuristic relevance scoring. `score_article(article)` returns a float (roughly -
 
 **`digest_anthropic.generate`** asks Claude (`ANTHROPIC_MODEL`, default `claude-opus-5-5`) (effort `medium`) for a two-to-three paragraph neutral summary with per-sentence citations plus up to five top story ids, using structured output (a JSON schema) so the reply is always parseable. Only headlines and the scraped publisher descriptions are sent, and the system prompt tells the model to treat them as data. On models that support it, server-side refusal fallbacks (`fallbacks="default"`) are on, so a safety-classifier decline on violent or extremist news is retried on the API's default fallback model. `claude-haiku-5-5` (about $0.05/month here) doesn't support them, so they're left off for it. `parse_response` rejects refusals and truncated output.
 
+## `live.py`
+
+`announce(date)` tells the production API that a day changed, through Upstash's REST API (`POST {UPSTASH_REDIS_REST_URL}/pipeline`): it deletes the day's cached response and the latest-date key (`news:v2:<date>`, `latest-date:v1`, which must match `cacheKeys` in the main repo's `api/src/app.ts`), then `PUBLISH`es the date on `news_updated`. Every running Cloud Run instance is subscribed and pushes a live update to its browsers; the return value is how many received it (0 when the API has scaled to zero, in which case the cache delete still keeps the next visit fresh). `is_configured()` needs both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`; `enrich_day` skips the step otherwise and never lets a failure stop the run.
+
 ## `embeddings.py`
 
-`embed_documents(texts)` embeds with Voyage `voyage-3.5` (`input_type="document"`, 1024 dimensions) in batches of 128. `document_text(row)` is `title + "\n\n" + description`. The API embeds search queries with the same model (`input_type="query"`), so keep the model name in sync with `api/src/embeddings.ts` in the parent repo. Needs `VOYAGE_API_KEY`.
+`embed_documents(texts)` embeds with Voyage `voyage-3.5` (`input_type="document"`, 1024 dimensions) in batches of 128. `document_text(row)` is `title + "\n\n" + description`. `top_per_day()` returns how many of each day's stories (by relevance) get embedded: `EMBED_TOP_PER_DAY`, default `DEFAULT_TOP_PER_DAY = 50`, `0` or less meaning no limit (`None`), and a non-number falling back to the default. A vector and its HNSW index entry take about 12 KB per story against about 2 KB without, so the limit is what keeps storage down. The API embeds search queries with the same model (`input_type="query"`), so keep the model name in sync with `api/src/embeddings.ts` in the parent repo. Needs `VOYAGE_API_KEY`.

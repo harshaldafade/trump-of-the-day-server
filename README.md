@@ -1,258 +1,109 @@
-# News pipeline for trumpoftheday.com
- Scraper, relevance ranking, daily AI digest (free via OpenRouter, or Claude), and embeddings. Used as a git submodule of [divij-pawar/trump-of-the-day](https://github.com/divij-pawar/trump-of-the-day), whose `api/` serves this data to the site.
+<div align="center">
 
-> **This repository is a data pipeline, not a server.** Despite the `-server` in its name, nothing here listens for requests. It is a batch job: once a day GitHub Actions runs it, it writes stories, a digest and embeddings to Postgres, and exits. The web server that the site talks to is the Fastify API in [`api/`](https://github.com/divij-pawar/trump-of-the-day/tree/main/api) of the main repository. The repository is due to be renamed to reflect this; until then, links and badges still use `trump-of-the-day-server`.
+# News pipeline for Trump of the Day
 
-| Lives here (pipeline) | Lives in the main repo |
-|---|---|
-| Scraping, dedupe, relevance scoring | React website (`src/`) |
-| Daily digest and embeddings | Fastify API that serves the data (`api/`) |
-| Database schema and migrations (`db/`) | Terraform for GCP and AWS (`infra/`) |
-| Daily GitHub Actions job and its Docker image | Website and API deploys |
- 
+**The batch job behind [trumpoftheday.com](https://trumpoftheday.com).** Once a day it scrapes the news, ranks it, has a free LLM write a cited brief, embeds each day's top stories for semantic search, and tells the live site to refresh.
+
 ![Docker Image Build](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/build-push.yml?label=Docker%20Image%20Build)
 ![Tests](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/test.yml?label=Tests)
 ![Daily News Update](https://img.shields.io/github/actions/workflow/status/harshaldafade/trump-of-the-day-server/daily-run.yml?label=Daily%20News%20Update)
+![Python](https://img.shields.io/badge/python-3.12-3776ab)
+![Postgres](https://img.shields.io/badge/Postgres-Neon%20%2B%20pgvector-336791)
 
-## Documentation
+</div>
 
-Deeper reference docs live in [`docs/`](docs/):
+> **This repository is a data pipeline, not a server.** Despite the `-server` in its name, nothing here listens for requests. It's a batch job: GitHub Actions runs it once a day, it writes stories, a brief and embeddings to Postgres, and it exits. The web server the site talks to is the Fastify API in [`api/`](https://github.com/divij-pawar/trump-of-the-day/tree/main/api) of the main repository. The repository is due to be renamed to reflect this; until then, links and badges still use `trump-of-the-day-server`.
 
--   [docs/scripts.md](docs/scripts.md) — every function/class in `news_scraper.py`, `insert_news.py`, `delete_news.py`, and what the `Dockerfile` does
--   [docs/lib.md](docs/lib.md) — `lib/utils.py` (the Neon database access layer), `lib/relevance.py`, `lib/digest.py` and `lib/embeddings.py`
--   [docs/db.md](docs/db.md) — the Neon schema (`db/schema.sql`), migrations, and the read-only-role gotcha
--   [CHANGELOG.md](CHANGELOG.md) — what changed, release by release
--   [docs/github.md](docs/github.md) — what each CI workflow, issue template, and policy file in `.github/` does
+| Lives here (pipeline) | Lives in the [main repo](https://github.com/divij-pawar/trump-of-the-day) |
+|---|---|
+| Scraping, dedupe, relevance scoring | React website (`src/`) |
+| Daily brief and embeddings | Fastify API that serves the data (`api/`) |
+| Database schema and migrations (`db/`) | Terraform for GCP and AWS (`infra/`) |
+| Daily GitHub Actions job and its Docker image | Website and API deploys |
 
-## Install
-1. Create and activate virtual environment
-```bash
-$ python -m venv env
-$ source env/bin/activate
-```
-2. Install dependencies
-```bash
-$ pip install -r requirements-dev.txt   # requirements.txt + pytest
-```
+## What a run does
 
-3. Create an .env file
-```
-# Neon Postgres connection (owner role: the pipeline writes)
-DATABASE_URL=<your neon connection string>
-# Optional: daily digest (skipped if neither key is set; OpenRouter wins if both are)
-OPENROUTER_API_KEY=          # free, via OpenRouter's Free Router (openrouter/free)
-# OPENROUTER_MODELS=a/b:free,c/d:free   # pin specific free models instead of the router
-ANTHROPIC_API_KEY=           # Claude; or force it with DIGEST_PROVIDER=anthropic
-# ANTHROPIC_MODEL=claude-haiku-5-5      # ~$0.05/month instead of Opus
-# Optional: embeddings for search / related coverage (skipped if unset)
-VOYAGE_API_KEY=
+```mermaid
+flowchart TD
+  start(["Daily run, 14:00 UTC<br/>insert_news.py yesterday today"]) --> scrape
+  subgraph scrape["1. Collect"]
+    g["GDELT DOC 2.0<br/>real URLs, thumbnails"]
+    r["Google News RSS<br/>redirect links"]
+  end
+  scrape --> meta["Fill missing descriptions and images<br/>from each article page"]
+  meta --> score["2. Score relevance<br/>lib/relevance.py"]
+  score --> ins[("3. Insert into Neon<br/>ON CONFLICT md5(link) DO NOTHING")]
+  ins --> emb["4. Embed the day's top 50<br/>Voyage voyage-3.5, 1024 dims"]
+  emb --> dig["5. Daily brief with citations<br/>OpenRouter free models, 3 attempts"]
+  dig --> up[("daily_digest<br/>summary, paragraphs, model")]
+  up --> ann["6. Announce the day<br/>DEL cache key, PUBLISH news_updated"]
+  ann --> api(["API instances push a live update<br/>to open browsers"])
 ```
 
-4. Apply the schema: `db/schema.sql` for a new database, or the files in `db/migrations/` for an existing one (see [docs/db.md](docs/db.md)).
+Every step after the insert is optional and isolated. If there's no Voyage key, embeddings are skipped. If the brief fails, the day keeps its ranked stories and the next run, which re-processes yesterday, tries again. The announcement never stops a run.
 
-5. Run the tests
-```bash
-$ python -m pytest
-```
+## Technical highlights
 
-### Before the first production run
+- **Two sources, one result.** GDELT supplies real article URLs and thumbnails; Google News RSS adds breadth. Results are merged and deduplicated. The scraper obeys GDELT's rate limit with a 6-second minimum between its own requests, and everything is plain HTTP with retry and backoff: no headless browser.
+- **Idempotent by design.** A unique index on `md5(link)` makes inserts skip duplicates. It's a hash because some Google redirect links are several kilobytes, over what a btree can index. Every maintenance command only acts on rows that still need it, so anything can be re-run.
+- **Ranked, not filtered.** A hard keyword filter would have deleted hundreds of legitimate administration stories, so each article gets a heuristic score instead (headline match, outlet reputation, completeness, minus idioms such as "trump card"). The API orders each day by it, and the brief reads the top 40.
+- **A brief you can check.** The model writes the summary sentence by sentence and names the stories each sentence rests on. Citations for stories the model wasn't shown are dropped, and the model that wrote the brief is stored with it.
+- **Built for unreliable free models.** Reasoning is capped, structured output is requested, and each run makes up to three attempts, re-routed to a possibly different model.
+- **Embeddings where they pay off.** `voyage-3.5` vectors (1024 dimensions) in pgvector with an HNSW index power semantic search and "related coverage" on the site. Only each day's top 50 stories by relevance are embedded: a vector and its index entry take about 12 KB against about 2 KB for the story alone, and the index was the biggest object in the database. `EMBED_TOP_PER_DAY` changes the limit (`0` embeds everything).
+- **Safe live updates.** After a day is processed the run deletes that day's cached API response and publishes its date on a Redis channel through Upstash's REST API, so even a scaled-to-zero API serves fresh data on the next visit.
+- **Tested without network or database.** 56 pytest cases cover scoring, digest parsing, embeddings batching, the scraper's helpers and the order of the enrichment steps, with external clients faked.
 
-Production needs the current schema and the GitHub secrets:
-
-1. Run `db/migrations/002_dedupe_vector_digest.sql` on Neon with the owner connection string (take a Neon branch first; it deletes duplicate links). Then `python insert_news.py rescore`, `backfill-embeddings` (with a Voyage key) and `enrich <start> <end>` to fill existing rows. See [docs/db.md](docs/db.md).
-2. In this repo's Settings → Secrets and variables → Actions, set `DATABASE_URL`, and `OPENROUTER_API_KEY` for the brief (optionally `VOYAGE_API_KEY`). See [docs/github.md](docs/github.md).
-
-### Testing locally against a throwaway database
-
-The main repository's `docker compose up -d` starts Postgres with pgvector on `127.0.0.1:5432`, seeded with synthetic stories. Run the pipeline against it by setting `DATABASE_URL` on the command line. A variable already in the environment wins over `.env`, so this can't touch production even if `.env` holds the Neon URL:
+## Quick start
 
 ```bash
-$ DATABASE_URL=postgres://owner:owner@127.0.0.1:5432/news python insert_news.py yesterday today
-$ DATABASE_URL=postgres://owner:owner@127.0.0.1:5432/news python insert_news.py enrich 2026-11-13 2026-11-13
+python -m venv env && source env/bin/activate
+pip install -r requirements-dev.txt     # requirements.txt + pytest
+python -m pytest                        # no network or database needed
 ```
 
-With the main repo's site running (`npm run dev`), open pages update as soon as a day is processed.
+To run it against a database, create a `.env` (see [docs/setup.md](docs/setup.md) for every variable) and apply `db/schema.sql`:
 
-## News Scraper
-`news_scraper.py` pulls Trump-related news from two independent sources and merges/deduplicates the results:
-
--   **Google News RSS** (`news.google.com/rss/search`) — a lightweight, sanctioned feed endpoint. Its article links are Google redirect URLs that can't be resolved to the real article server-side, so entries from this source keep the Google link but have no thumbnail/description.
--   **[GDELT DOC 2.0 API](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)** (free, no API key) — the primary source; it returns real article URLs, direct thumbnails (`socialimage`), and has full historical coverage. GDELT asks for at least one request every 5 seconds, so the scraper enforces a 6-second minimum between its own requests automatically.
-
-For each article missing a description, the scraper visits the real article page (skipping unresolvable Google links) to pull `og:description`/`twitter:description`/JSON-LD, filling in the thumbnail too if GDELT didn't supply one. All HTTP requests go through a session with retry/backoff on 429/5xx responses and a short fuse on plain connection failures.
-
-There's no headless browser or Selenium/Chrome dependency — everything is plain HTTP.
-
-## What happens after a day is inserted
-Each article is scored by `lib/relevance.py` before insert (rows whose `link` is already stored are skipped). Then, for every processed date, `enrich_day` in `insert_news.py`:
-
-1.  embeds new rows with Voyage (`voyage-3.5`, if `VOYAGE_API_KEY` is set) for semantic search and "related coverage";
-2.  asks an LLM for a short neutral summary of the day's top 40 stories and its top five story ids, stored in `daily_digest`. The summary comes back sentence by sentence, each sentence with the ids of the one to three stories it's based on (`daily_digest.paragraphs`); the site shows these as numbered links to the stories. By default this goes to OpenRouter's [Free Router](https://openrouter.ai/docs/guides/routing/routers/free-router) (`openrouter/free`, needs `OPENROUTER_API_KEY`), which picks an available free model; the model that actually wrote the brief is stored and shown on the site. Reasoning is capped and the call is tried up to three times, since some free models think until they run out of tokens. With `DIGEST_PROVIDER=anthropic` it uses Claude (`ANTHROPIC_API_KEY`);
-3.  sends `NOTIFY news_updated, '<date>'`, which makes every running API instance drop its cached copy of that date and push a WebSocket message to open browsers.
-
-A failure in step 1 or 2 is logged and doesn't stop the others. Because the daily job processes yesterday and today, a day whose brief failed gets a second attempt on the next run.
-
-## Run insert script
-The `insert_news` script fetches and stores news articles in the Neon
-database for a given date range.
-
-### Running the script
-
-You can run the script directly from the command line:
-
-``` bash
-python insert_news.py [start_date] [end_date]
+```bash
+DATABASE_URL=postgres://... python insert_news.py yesterday today
 ```
 
-#### Arguments
+The main repository's `docker compose up -d` starts a throwaway Postgres with pgvector and Redis that the pipeline can run against safely.
 
--   `start_date` (optional):
-    -   Accepts `YYYY-MM-DD` format.\
-    -   You can also pass `today`/`t` or `yesterday`/`y`. These are UTC dates, the same day boundary the site uses, whatever your machine's timezone.\
-    -   If not provided, defaults to today (UTC).
--   `end_date` (optional):
-    -   Accepts `YYYY-MM-DD` format, or `today`/`t`.\
-    -   If not provided, the utility will only fetch news for the
-        `start_date`.
+| Variable | Needed for |
+|---|---|
+| `DATABASE_URL` | Everything. The **owner** role: the pipeline writes. |
+| `OPENROUTER_API_KEY` | The daily brief (free models). |
+| `VOYAGE_API_KEY` | Embeddings for search and related coverage. |
+| `EMBED_TOP_PER_DAY` | How many of each day's stories get an embedding. Default 50; `0` means all. |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Telling the production API a day changed. |
+| `ANTHROPIC_API_KEY`, `DIGEST_PROVIDER=anthropic` | Writing the brief with Claude instead. |
 
-The Docker image (and so the daily GitHub Actions run) uses `yesterday today`: re-scraping yesterday picks up stories published after the previous day's run, and duplicates are skipped.
+Only `DATABASE_URL` is required. A step with no key is skipped, and the raw stories are still saved.
 
-#### Examples
+## Commands
 
-1.  Fetch news for **today**:
-
-``` bash
-python insert_news.py today
-```
-
-2.  Fetch news for a specific date:
-
-``` bash
-python insert_news.py 2025-09-10
-```
-
-3.  Fetch news for a date range:
-
-``` bash
-python insert_news.py 2025-09-01 2025-09-05
-```
-
-### Output
-
--   The script prints progress logs while fetching and saving articles.\
--   At the end, it shows the total number of articles saved.
-
-Example output:
-
-    🔍 Processing news from 2025-09-01 to 2025-09-05
-    📊 Total articles saved: 120
-
-If no news is fetched, you will see:
-
-    ⚠️ No news fetched for 2025-09-10.
-
-If there is an insertion error, you will see:
-
-    ❌ Error inserting data for 2025-09-03: <error_message>
-
-### Maintenance subcommands
-
-`insert_news.py` also supports these maintenance operations:
-
--   **`backfill-missing`** — finds every date with zero rows between the table's earliest date and yesterday, scrapes all of them (capped at 15 articles/day to match the site's historical density), and inserts everything in a single bulk request rather than one insert per day.
-
-    ``` bash
-    python insert_news.py backfill-missing
-    ```
-
--   **`repair-descriptions`** — finds existing rows with an empty `description` and a fetchable (non-Google) link, and re-visits each article page to fill one in. Rows behind a Google News redirect link are skipped since they can't be resolved server-side.
-
-    ``` bash
-    python insert_news.py repair-descriptions
-    ```
-
--   **`enrich [start] [end]`** — re-runs embeddings, the daily digest and the `NOTIFY` for a date or range without scraping (e.g. to regenerate digests after changing the prompt).
-
-    ``` bash
-    python insert_news.py enrich 2025-09-01 2025-09-05
-    ```
-
--   **`backfill-embeddings`** — embeds every row that has no embedding yet, 1,000 at a time. Run once after migration 002.
-
--   **`rescore [start] [end]`** — recomputes `relevance_score` for existing rows (all rows if no range). Run once after migration 002, and after changing `lib/relevance.py`.
-
-All of them are safe to re-run at any time — they only ever act on rows that still need it (or overwrite with the same result).
-
-## Run delete script
-The `delete_news` script deletes news articles from the Neon database
-for a given date range.
-
-### Running the script
-
-You can run the script directly from the command line:
-
-``` bash
-python delete_news.py [start_date] [end_date] [--force]
-```
-
-#### Arguments
-
--   `start_date` (optional):
-    -   Accepts `YYYY-MM-DD` format.\
-    -   You can also pass `today` or `t` to delete news for the current
-        date.\
-    -   If not provided, the utility will use its default logic.
--   `end_date` (optional):
-    -   Accepts `YYYY-MM-DD` format.\
-    -   If not provided, the utility will only delete news for the
-        `start_date`.
--   `--force`, `-f`, `yes`, or `y` (optional):
-    -   Skips the confirmation prompt and directly deletes the articles.
-
-#### Examples
-
-1.  Delete news for **today** (with confirmation prompt):
-
-``` bash
-python delete_news.py today
-```
-
-2.  Delete news for a specific date (without confirmation prompt):
-
-``` bash
+```bash
+python insert_news.py [start] [end]      # scrape and store a day or a range
+python insert_news.py enrich 2026-11-01 2026-11-18
+python insert_news.py rescore
+python insert_news.py backfill-embeddings
 python delete_news.py 2025-09-10 --force
 ```
 
-3.  Delete news for a date range:
+Dates are `YYYY-MM-DD`, `today` or `yesterday` (UTC, the same day boundary as the site). Every subcommand, with arguments and example output, is in [docs/cli.md](docs/cli.md).
 
-``` bash
-python delete_news.py 2025-09-01 2025-09-05
-```
+## Documentation
 
-#### Confirmation Prompt
+| Doc | What's in it |
+|---|---|
+| [docs/setup.md](docs/setup.md) | **Setting everything up:** database, environment, GitHub secrets, the image, the schedule, first production run, troubleshooting |
+| [docs/cli.md](docs/cli.md) | Every command with arguments and examples |
+| [docs/scripts.md](docs/scripts.md) | Every function in `news_scraper.py`, `insert_news.py`, `delete_news.py`, and the `Dockerfile` |
+| [docs/lib.md](docs/lib.md) | `lib/utils.py` (database layer), `relevance.py`, `digest*.py`, `embeddings.py`, `live.py` |
+| [docs/db.md](docs/db.md) | The schema, migrations and the Neon read-only-role gotcha |
+| [docs/github.md](docs/github.md) | What each workflow and template in `.github/` does |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, release by release |
 
-If `--force` is not passed, you will see a prompt:
+## License
 
-    ⚠️ You are about to delete all news articles from 2025-09-01 to 2025-09-05
-    Are you sure you want to proceed? (yes/no): 
-
-Type `yes` to proceed, or anything else to cancel.
-
-### Output
-
--   The script prints logs while deleting articles.\
--   At the end, it shows the total number of articles deleted.
-
-Example output:
-
-    🗑️ Deleting news from 2025-09-01 to 2025-09-05
-    📊 Total articles deleted: 45
-
-If no news is found for a date, you will see:
-
-    ℹ️ No news articles found for 2025-09-10
-
-If there is a deletion error, you will see:
-
-    ❌ Error deleting data for 2025-09-03: <error_message>
-
+[MIT](LICENSE).
