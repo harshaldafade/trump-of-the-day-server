@@ -2,7 +2,7 @@ import datetime as dt
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
-from lib import digest, embeddings
+from lib import digest, embeddings, live
 from lib.relevance import score_article
 from lib.utils import Utility, DatabaseConnection
 from news_scraper import fetch_news_by_date, fetch_meta, build_session, is_google_link, is_image_reachable
@@ -33,7 +33,9 @@ def enrich_day(db, day):
 
     1. embed rows that don't have an embedding yet (Voyage)
     2. (re)write the daily digest from the day's top-ranked stories (Claude)
-    3. NOTIFY running API instances so they drop their cache and push to browsers
+    3. tell running API instances so they drop their cache and push to browsers:
+       Postgres NOTIFY (the AWS stack listens) and Redis pub/sub through Upstash
+       (production on Cloud Run listens; skipped without UPSTASH_REDIS_REST_*)
 
     A failure in 1 or 2 is logged and doesn't stop the others -- the raw feed is
     still useful without a digest.
@@ -67,6 +69,13 @@ def enrich_day(db, day):
     except Exception as e:
         print(f"⚠️ NOTIFY failed for {day}: {e}")
 
+
+    if live.is_configured():
+        try:
+            replicas = live.announce(day)
+            print(f"📣 Announced {day} to {replicas} API replica(s)")
+        except Exception as e:
+            print(f"⚠️ Redis announce failed for {day}: {e}")
 
 class NewsStorage:
     """Fetches and stores news for a given date or date range."""

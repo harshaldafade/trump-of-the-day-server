@@ -35,6 +35,9 @@ jobs:
       #   OPENROUTER_API_KEY  daily digest via OpenRouter's free router (preferred when set)
       #   ANTHROPIC_API_KEY   daily digest with Claude (DIGEST_PROVIDER=anthropic)
       #   VOYAGE_API_KEY      embeddings for search / related coverage
+      #   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+      #                       tell the API (Cloud Run) a day changed: clears its
+      #                       cached copy and pushes a live update to browsers
       # OPENROUTER_MODELS / DIGEST_PROVIDER / ANTHROPIC_MODEL are optional
       # repository variables (Settings > Variables) to override the defaults.
       - name: Run Docker container
@@ -43,11 +46,14 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
           DIGEST_PROVIDER: ${{ vars.DIGEST_PROVIDER }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
         run: >-
           docker run --rm
           -e DATABASE_URL -e OPENROUTER_API_KEY -e ANTHROPIC_API_KEY -e VOYAGE_API_KEY
+          -e UPSTASH_REDIS_REST_URL -e UPSTASH_REDIS_REST_TOKEN
           -e OPENROUTER_MODELS -e DIGEST_PROVIDER -e ANTHROPIC_MODEL
           "ghcr.io/${{ github.repository }}/daily-news-job:latest"
