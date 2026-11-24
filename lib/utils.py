@@ -400,6 +400,55 @@ class DatabaseConnection:
         except Exception as e:
             raise Exception(f"Error deleting data: {e}")
 
+    def delete_by_max_relevance(self, max_score):
+        """
+        Delete rows whose relevance_score is at or below `max_score`. Rows with no
+        score are kept (run `rescore` first).
+
+        Returns:
+            int: Number of rows deleted
+        """
+        query = sql.SQL("DELETE FROM {table} WHERE relevance_score <= %s").format(
+            table=sql.Identifier(self.table_name))
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, [max_score])
+                return cur.rowcount
+
+    def trim_days(self, keep, date=None):
+        """
+        Delete rows ranked below `keep` in their day (relevance_score DESC NULLS LAST,
+        id: the order of fetch_ranked_by_date), for one date or every date. Rows the
+        day's brief cites (top_story_ids or a sentence's story_ids) are kept, so a
+        citation never points at a deleted story.
+
+        Returns:
+            int: Number of rows deleted
+        """
+        query = sql.SQL("""
+            DELETE FROM {table} n
+            USING (
+                SELECT id, row_number() OVER (
+                    PARTITION BY date ORDER BY relevance_score DESC NULLS LAST, id
+                ) AS day_rank
+                FROM {table}
+                WHERE %s::date IS NULL OR date = %s::date
+            ) ranked
+            WHERE n.id = ranked.id AND ranked.day_rank > %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM daily_digest d
+                  WHERE d.date = n.date
+                    AND (n.id = ANY(d.top_story_ids)
+                         OR jsonb_path_exists(coalesce(d.paragraphs, '[]'),
+                                              '$[*][*].story_ids[*] ? (@ == $id)',
+                                              jsonb_build_object('id', n.id)))
+              )
+        """).format(table=sql.Identifier(self.table_name))
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, [date, date, keep])
+                return cur.rowcount
+
     def delete_by_date(self, date):
         """
         Delete records for a specific date.

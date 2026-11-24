@@ -31,7 +31,8 @@ flowchart TD
     r["Google News RSS<br/>redirect links"]
   end
   scrape --> meta["Fill missing descriptions and images<br/>from each article page"]
-  meta --> score["2. Score relevance<br/>lib/relevance.py"]
+  meta --> check["Completeness check<br/>re-fetch what's still missing<br/>lib/completeness.py"]
+  check --> score["2. Score relevance<br/>lib/relevance.py"]
   score --> ins[("3. Insert into Neon<br/>ON CONFLICT md5(link) DO NOTHING")]
   ins --> emb["4. Embed the day's top 50<br/>Voyage voyage-3.5, 1024 dims"]
   emb --> dig["5. Daily brief with citations<br/>OpenRouter free models, 3 attempts"]
@@ -46,7 +47,7 @@ Every step after the insert is optional and isolated. If there's no Voyage key, 
 
 - **Two sources, one result.** GDELT supplies real article URLs and thumbnails; Google News RSS adds breadth. Results are merged and deduplicated. The scraper obeys GDELT's rate limit with a 6-second minimum between its own requests, and everything is plain HTTP with retry and backoff: no headless browser.
 - **Idempotent by design.** A unique index on `md5(link)` makes inserts skip duplicates. It's a hash because some Google redirect links are several kilobytes, over what a btree can index. Every maintenance command only acts on rows that still need it, so anything can be re-run.
-- **Ranked, not filtered.** A hard keyword filter would have deleted hundreds of legitimate administration stories, so each article gets a heuristic score instead (headline match, outlet reputation, completeness, minus idioms such as "trump card"). The API orders each day by it, and the brief reads the top 40.
+- **Ranked first, filtered only at the bottom.** A hard keyword filter would have deleted hundreds of legitimate administration stories, so each article gets a heuristic score instead: his name, officials, U.S. government and policy terms, outlet reputation, minus idioms such as "trump card". The API orders each day by it, and the brief reads the top 40. Only each day's top 50 are stored, and never anything scoring 0 or below, where nothing ties the story to Trump or his administration. The score judges content only: a missing description or image isn't a relevance signal, so a completeness check before scoring re-fetches the article page for anything still missing.
 - **A brief you can check.** The model writes the summary sentence by sentence and names the stories each sentence rests on. Citations for stories the model wasn't shown are dropped, and the model that wrote the brief is stored with it.
 - **Built for unreliable free models.** Reasoning is capped, structured output is requested, and each run makes up to three attempts, re-routed to a possibly different model.
 - **Embeddings where they pay off.** `voyage-3.5` vectors (1024 dimensions) in pgvector with an HNSW index power semantic search and "related coverage" on the site. Only each day's top 50 stories by relevance are embedded: a vector and its index entry take about 12 KB against about 2 KB for the story alone, and the index was the biggest object in the database. `EMBED_TOP_PER_DAY` changes the limit (`0` embeds everything).

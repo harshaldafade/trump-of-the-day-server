@@ -98,6 +98,14 @@ Deletes one row by primary key.
 -   **Returns:** Number of rows affected (`int`)
 -   **Usage:** `db.delete_record(42)`
 
+#### `trim_days(keep, date=None)`
+
+Deletes rows ranked below `keep` in their day (`relevance_score DESC NULLS LAST, id`, the order of `fetch_ranked_by_date`), for one date or all of them, and returns the count. Rows the day's brief cites, in `top_story_ids` or any sentence's `story_ids` in `paragraphs`, are never deleted. Used after each day's insert and by `trim-days`.
+
+#### `delete_by_max_relevance(max_score)`
+
+Deletes rows with `relevance_score <= max_score` (rows with no score are kept) and returns the count. Used by `prune-irrelevant`.
+
 #### `delete_by_date(date)`
 Deletes every row for a given date.
 
@@ -169,7 +177,11 @@ Added for relevance ranking, embeddings and the daily digest (migration 002). Al
 
 ## `relevance.py`
 
-Heuristic relevance scoring. `score_article(article)` returns a float (roughly -3 to 8) from: "Trump" in the headline (+3) or only in the description (+1.5); administration keywords in the headline (+1.5); a reputable outlet domain or subdomain (+1.5); a description (+0.5) and image (+0.5); minus 3 for idioms like "trump card" (which are also removed before the name check), minus 1 for unresolvable Google redirect links, minus 0.5 for very short headlines. `rank(articles)` sorts best-first. Scores are stored in `news.relevance_score`; the API orders each day by it and the digest reads the top 40. Pure functions, covered by `tests/test_relevance.py`.
+Heuristic relevance scoring. `score_article(article)` returns a float (roughly -3.5 to 9) from: "Trump" in the headline (+3) or only in the description (+1.5); administration keywords, including senior officials such as Hegseth, Rubio and Bessent, in the headline (+1.5) or only in the description (+0.5); a U.S. government abbreviation in the headline (+1: `US`, `U.S.`, `ICE`, `FBI`, `CIA`, case-sensitive so the pronoun "us" doesn't count); a policy front in the headline (+1: Iran, Ukraine, Russia, Israel, Gaza, China, Greenland, NATO, immigration, the border, elections and so on); a reputable outlet (+1.5), matched by link domain or subdomain, or by outlet name (`REPUTABLE_SOURCES`) for Google News rows whose links are redirects; minus 3 for idioms like "trump card", "trumps the/all/everything" or "trumped up" (which are also removed before the name check; a bare "Trump the …" is the person, as in "Trump the environmentalist"), minus 0.5 for very short headlines. It scores content only: whether a description or image is missing doesn't change the score (`completeness.py` deals with that before scoring), and Google News redirect links score like any other link. `MIN_SCORE` is 0 and `is_relevant(score)` is `score > MIN_SCORE`: articles at or below it aren't stored. `KEEP_PER_DAY` is 50: only each day's 50 best-scored stories are stored. `rank(articles)` sorts best-first. Scores are stored in `news.relevance_score`; the API orders each day by it and the digest reads the top 40. Pure functions, covered by `tests/test_relevance.py`.
+
+## `completeness.py`
+
+The check that runs on scraped articles before they're scored, in `NewsStorage.save_news_by_date` and `MissingDaysBackfiller`. `missing_fields(article)` lists which of `description` and `image_url` are empty (the old `No Image Available` placeholder counts as empty). `complete(articles, session=None, workers=6)` scrapes the page again with `fetch_meta` for every incomplete article that has a real link, fills a missing description, and fills a missing image only if `is_image_reachable` confirms it loads. It changes the articles in place, prints a one-line summary when anything was missing, and returns `checked`, `incomplete`, `refetched`, `filled` (per field), `still_incomplete` and `unfetchable` (Google News redirect links, which can't be fetched server-side). Covered by `tests/test_completeness.py`.
 
 ## `digest.py`, `digest_openrouter.py`, `digest_anthropic.py`
 
