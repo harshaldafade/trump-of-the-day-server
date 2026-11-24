@@ -1,4 +1,4 @@
--- Migration 002: dedupe constraint, date index, relevance score, pgvector embeddings,
+-- Migration 002: dedupe (unique link hash), date index, relevance score, pgvector embeddings,
 -- and the daily_digest table. Safe to re-run.
 --
 -- Run against the Neon *owner* connection string:
@@ -17,12 +17,13 @@ USING news b
 WHERE a.link = b.link
   AND a.id > b.id;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'news_link_key') THEN
-    ALTER TABLE news ADD CONSTRAINT news_link_key UNIQUE (link);
-  END IF;
-END $$;
+-- Unique on a hash of the link, not the link itself: some stored links (Google
+-- News redirect URLs) are several KB, over btree's ~2.7 KB index-row limit
+-- ("index row size ... exceeds btree version 4 maximum 2704"). md5 is always 32
+-- characters; inserts use ON CONFLICT (md5(link)). An earlier draft of this
+-- migration added a plain UNIQUE (link) constraint; drop it where it exists.
+ALTER TABLE news DROP CONSTRAINT IF EXISTS news_link_key;
+CREATE UNIQUE INDEX IF NOT EXISTS news_link_md5_key ON news (md5(link));
 
 -- Every frontend/API query filters on date.
 CREATE INDEX IF NOT EXISTS news_date_idx ON news (date);

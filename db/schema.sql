@@ -14,9 +14,13 @@ CREATE TABLE IF NOT EXISTS news (
     news_source TEXT,
     image_url TEXT,
     relevance_score REAL,
-    embedding vector(1024),
-    CONSTRAINT news_link_key UNIQUE (link)
+    embedding vector(1024)
 );
+
+-- Dedupe on a hash of the link: some links are several KB, over btree's
+-- index-row limit, so a plain UNIQUE (link) can't be built. Inserts use
+-- ON CONFLICT (md5(link)) DO NOTHING.
+CREATE UNIQUE INDEX IF NOT EXISTS news_link_md5_key ON news (md5(link));
 
 CREATE INDEX IF NOT EXISTS news_date_idx ON news (date);
 CREATE INDEX IF NOT EXISTS news_embedding_idx ON news USING hnsw (embedding vector_cosine_ops);

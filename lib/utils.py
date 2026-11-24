@@ -147,8 +147,9 @@ class DatabaseConnection:
         connection per row (matters once volumes get into the hundreds/thousands,
         both for speed and for not hammering Neon with connection churn).
 
-        Rows whose `link` already exists are skipped (`ON CONFLICT (link) DO
-        NOTHING`, backed by the news_link_key constraint from migration 002), so
+        Rows whose `link` already exists are skipped (`ON CONFLICT (md5(link)) DO
+        NOTHING`, backed by the news_link_md5_key unique index from migration
+        002; a hash because some links are too long to index directly), so
         re-running a day -- e.g. the daily job re-scraping yesterday to pick up
         stories published after the previous run -- only adds what's new.
 
@@ -170,7 +171,7 @@ class DatabaseConnection:
             with self._connect() as conn:
                 with conn.cursor() as cur:
                     query = sql.SQL(
-                        "INSERT INTO {table} ({fields}) VALUES %s ON CONFLICT (link) DO NOTHING RETURNING id"
+                        "INSERT INTO {table} ({fields}) VALUES %s ON CONFLICT (md5(link)) DO NOTHING RETURNING id"
                     ).format(
                         table=sql.Identifier(self.table_name),
                         fields=sql.SQL(", ").join(map(sql.Identifier, columns)),
