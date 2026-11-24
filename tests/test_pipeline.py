@@ -1,7 +1,7 @@
 import datetime
 
 import insert_news
-from lib import digest, embeddings
+from lib import completeness, digest, embeddings
 from lib.utils import Utility
 
 
@@ -37,6 +37,83 @@ def test_build_records_includes_relevance_score():
         "news_source": "a.com", "image_url": "",
     }])
     assert record["relevance_score"] > 0
+
+
+def test_build_records_skips_articles_scoring_zero_or_below():
+    def scraped(title):
+        return {"date": "2025-03-01", "title": title, "description": "", "link": "https://a.com/" + title,
+                "news_source": "a.com", "image_url": ""}
+    records = insert_news._build_records([scraped("Trump signs order on federal hiring"),
+                                          scraped("Jets fans boo goalie in his return to Winnipeg")])
+    assert [r["title"] for r in records] == ["Trump signs order on federal hiring"]
+
+
+def test_build_records_keeps_only_each_days_top_50():
+    def scraped(date, i, title):
+        return {"date": date, "title": title, "description": "", "link": f"https://a.com/{date}/{i}",
+                "news_source": "a.com", "image_url": ""}
+    strong = "Trump signs executive order on tariffs"     # name + administration
+    weak = "Trump visits a county fair in rural Ohio"     # name only
+    articles = [scraped("2025-03-01", i, weak) for i in range(40)] + \
+               [scraped("2025-03-01", 100 + i, strong) for i in range(30)] + \
+               [scraped("2025-03-02", i, weak) for i in range(10)]
+
+    records = insert_news._build_records(articles)
+
+    first = [r for r in records if r["date"] == "2025-03-01"]
+    assert len(first) == 50
+    assert sum(r["title"] == strong for r in first) == 30  # every stronger story made the cut
+    assert [r["link"] for r in first if r["title"] == weak] == [f"https://a.com/2025-03-01/{i}" for i in range(20)]
+    assert len([r for r in records if r["date"] == "2025-03-02"]) == 10
+
+
+def test_trim_days_keeps_each_days_top_50():
+    class Db:
+        def trim_days(self, keep, date=None):
+            self.args = (keep, date)
+            return 3
+    db = Db()
+    assert insert_news.trim_days(db) == 3 and db.args == (50, None)
+
+
+def test_prune_irrelevant_deletes_at_the_insert_threshold():
+    class Db:
+        def delete_by_max_relevance(self, max_score):
+            self.max_score = max_score
+            return 7
+    db = Db()
+    assert insert_news.prune_irrelevant(db) == 7 and db.max_score == 0
+
+
+def test_save_runs_the_completeness_check_before_scoring(monkeypatch):
+    scraped = [{"date": "2025-03-01", "title": "Markets slide on hiring freeze", "description": "",
+                "link": "https://a.com/1", "news_source": "a.com", "image_url": ""}]
+    monkeypatch.setattr(insert_news, "fetch_news_by_date", lambda day: [dict(a) for a in scraped])
+
+    def fill(articles):
+        articles[0]["description"] = "President Trump's order freezes hiring"
+    monkeypatch.setattr(completeness, "complete", fill)
+    monkeypatch.setattr(insert_news, "enrich_day", lambda db, day: None)
+
+    inserted, trims = [], []
+
+    class Db:
+        def insert_records(self, records):
+            inserted.extend(records)
+            return len(records)
+
+        def trim_days(self, keep, date=None):
+            trims.append((keep, date))
+            return 0
+
+    storage = insert_news.NewsStorage.__new__(insert_news.NewsStorage)
+    storage.db, storage.degraded_days = Db(), []
+    storage.save_news_by_date(datetime.date(2025, 3, 1))
+
+    [record] = inserted
+    assert record["description"] == "President Trump's order freezes hiring"
+    assert record["relevance_score"] == 2.0  # "Trump" and "President" in the re-fetched description
+    assert trims == [(50, datetime.date(2025, 3, 1))]
 
 
 def test_enrich_day_skips_unconfigured_steps_but_always_notifies(monkeypatch):
