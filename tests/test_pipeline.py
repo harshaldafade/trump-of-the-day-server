@@ -97,3 +97,35 @@ def test_today_is_utc_whatever_the_local_timezone(monkeypatch):
     import lib.utils as utils_module
     monkeypatch.setattr(utils_module.datetime, "datetime", FakeDatetime)
     assert utils_module.today_utc() == datetime.date(2026, 11, 11)
+
+
+def test_image_repairer_skips_google_links_and_unreachable_images(monkeypatch):
+    class Db:
+        updated = None
+
+        def find_rows_missing_image(self):
+            return [
+                (1, "https://news.google.com/rss/articles/CBMi123"),
+                (2, "https://pub.test/ok"),
+                (3, "https://pub.test/dead-image"),
+                (4, "https://pub.test/no-image"),
+            ]
+
+        def update_images(self, updates):
+            self.updated = sorted(updates)
+            return len(updates)
+
+    images = {"https://pub.test/ok": "https://img.test/ok.jpg", "https://pub.test/dead-image": "https://img.test/404.jpg"}
+    fetched = []
+
+    def fake_meta(url, session):
+        fetched.append(url)
+        return {"image": images.get(url, ""), "description": ""}
+
+    monkeypatch.setattr(insert_news, "fetch_meta", fake_meta)
+    monkeypatch.setattr(insert_news, "is_image_reachable", lambda image, referer, session: image.endswith("ok.jpg"))
+
+    db = Db()
+    assert insert_news.ImageRepairer(db, session=object()).run() == 1
+    assert db.updated == [(2, "https://img.test/ok.jpg")]
+    assert not any("google.com" in url for url in fetched)

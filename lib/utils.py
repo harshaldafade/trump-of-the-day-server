@@ -548,3 +548,48 @@ class DatabaseConnection:
             return len(updates)
         except Exception as e:
             raise Exception(f"Error bulk updating descriptions: {e}")
+
+    def find_rows_missing_image(self):
+        """
+        Find rows with no thumbnail whose link is a real article page (not a Google
+        News redirect, which can't be resolved server-side).
+
+        Returns:
+            list[tuple]: (id, link) for each candidate row
+        """
+        query = sql.SQL("""
+            SELECT id, link FROM {table}
+            WHERE (image_url IS NULL OR image_url IN ('', 'No Image Available'))
+              AND link ~ '^https?://'
+              AND link NOT LIKE '%%google.com%%'
+            ORDER BY id
+        """).format(table=sql.Identifier(self.table_name))
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                return cur.fetchall()
+
+    def update_images(self, updates):
+        """
+        Bulk-set image_url for many rows in one transaction.
+
+        Args:
+            updates (list[tuple]): (id, image_url) tuples
+
+        Returns:
+            int: Number of rows updated
+        """
+        if not updates:
+            return 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    sql.SQL(
+                        "UPDATE {table} SET image_url = data.image_url "
+                        "FROM (VALUES %s) AS data(id, image_url) "
+                        "WHERE {table}.id = data.id"
+                    ).format(table=sql.Identifier(self.table_name)).as_string(cur),
+                    updates,
+                )
+        return len(updates)

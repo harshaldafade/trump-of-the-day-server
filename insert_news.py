@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from lib import digest, embeddings
 from lib.relevance import score_article
 from lib.utils import Utility, DatabaseConnection
-from news_scraper import fetch_news_by_date, fetch_meta, build_session, is_google_link
+from news_scraper import fetch_news_by_date, fetch_meta, build_session, is_google_link, is_image_reachable
 
 
 def _build_records(articles):
@@ -242,6 +242,50 @@ def rescore(db, start_date=None, end_date=None):
 
 def backfill_embeddings(db, batch=1000):
     """Embed every row that has no embedding, `batch` rows per round trip."""
+class ImageRepairer:
+    """Finds rows with no thumbnail and takes one from the article page's og:image
+    (or Twitter card / JSON-LD), keeping it only if it actually loads as an image.
+
+    Google News redirect links can't be resolved to the article server-side (newer
+    ones don't even contain the article URL), so those rows are skipped; the site
+    shows a placeholder for them.
+    """
+
+    WORKERS = 10
+
+    def __init__(self, db, session=None):
+        self.db = db
+        self.session = session or build_session()
+
+    def _fetch_one(self, row):
+        row_id, link = row
+        if is_google_link(link):
+            return None
+        image = fetch_meta(link, self.session)["image"]
+        if not image or not is_image_reachable(image, link, self.session):
+            return None
+        return row_id, image
+
+    def run(self):
+        rows = self.db.find_rows_missing_image()
+        print(f"🖼️ {len(rows)} row(s) without an image to check")
+        if not rows:
+            return 0
+
+        updates = []
+        with ThreadPoolExecutor(max_workers=self.WORKERS) as pool:
+            for i, result in enumerate(pool.map(self._fetch_one, rows), 1):
+                if result:
+                    updates.append(result)
+                if i % 100 == 0:
+                    print(f"  ...{i}/{len(rows)} processed, {len(updates)} images found so far")
+
+        print(f"📥 Updating {len(updates)} row(s) ({len(rows) - len(updates)} had no usable image, e.g. dead/paywalled pages)")
+        count = self.db.update_images(updates)
+        print(f"✅ Updated {count} rows.")
+        return count
+
+
     if not embeddings.is_configured():
         print("❌ VOYAGE_API_KEY is not set.")
         return 0
@@ -283,6 +327,8 @@ if __name__ == "__main__":
     else:
         start_date_arg = args[0] if len(args) > 0 else None
         end_date_arg = args[1] if len(args) > 1 else None
+    elif args and args[0] == "repair-images":
+        ImageRepairer(DatabaseConnection(table_name="news")).run()
         storage = NewsStorage()
         storage.run(start_date_arg, end_date_arg)
         if storage.degraded_days:
